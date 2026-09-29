@@ -219,3 +219,7 @@ __marimo__/
 
 
 .vscode
+
+# Claude Code personal files
+.claude/settings.local.json
+CLAUDE.local.md
