@@ -1,0 +1,7 @@
+version: 1
+capabilities:
+- commitlint
+- formatting
+- python
+- secrets
+agent_capabilities: []

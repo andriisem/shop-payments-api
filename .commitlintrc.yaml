@@ -1,0 +1,4 @@
+---
+# Created by hoko. Safe to edit - hoko never overwrites an existing config.
+extends:
+  - "@commitlint/config-conventional"
