@@ -1,0 +1,49 @@
+[project]
+name = "shop-payments-api"
+version = "0.1.0"
+description = "Payment endpoint for the online shop cart"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.1",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "N",       # pep8-naming
+    "S",       # bandit (security)
+    "DTZ",     # timezone-aware datetimes
+    "RET",     # return statements
+    "PT",      # pytest style
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest works
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
