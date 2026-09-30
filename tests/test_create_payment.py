@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.external import ChargeResult
 from app.payments.domain import Failed
-from app.payments.service import finalise_payment
+from app.payments.service import finalize_payment
 from tests.factories import CartFixture, insert_payment
 from tests.fakes import ChargeCall, RecordingProvider
 from tests.helpers import add_card, cart_payment_statuses, cart_status, pay, stored_payment
@@ -124,7 +124,7 @@ def test_ac15_guarded_update_never_changes_a_final_payment(
         payment_id = insert_payment(conn, alice, status="succeeded", provider_payment_id="ch_1")
 
     with sessionmaker(engine).begin() as session:
-        updated = finalise_payment(session, payment_id, Failed("card_declined"))
+        updated = finalize_payment(session, payment_id, Failed("card_declined"))
 
     assert updated is None
     assert stored_payment(engine, payment_id)["status"] == "succeeded"
@@ -181,7 +181,7 @@ def test_ec5_cart_moved_on_during_the_call_is_not_overwritten(
     assert [getattr(r, "payment_id", None) for r in caplog.records] == [payment_id]
 
 
-def test_fr14_payment_finalised_elsewhere_during_the_call_keeps_that_state(
+def test_fr14_payment_finalized_elsewhere_during_the_call_keeps_that_state(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
     declining_card = add_card(engine, alice, "tok_decline")

@@ -145,7 +145,7 @@ same day at 23:07 EEST, on a second local server started with the fixed code
 
 ## Not covered by manual testing
 
-As the guide explains, these need injected fakes and are covered by the automated tests only: fractional and `NaN` totals (EC-9), unconfirmed provider answers (FR-13), a payment finalised elsewhere during the call (FR-14), no open transaction during the provider call (AC-17), and the card token never reaching a log line (AC-16).
+As the guide explains, these need injected fakes and are covered by the automated tests only: fractional and `NaN` totals (EC-9), unconfirmed provider answers (FR-13), a payment finalized elsewhere during the call (FR-14), no open transaction during the provider call (AC-17), and the card token never reaching a log line (AC-16).
 
 ## State left behind
 

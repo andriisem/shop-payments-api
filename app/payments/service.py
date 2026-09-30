@@ -1,4 +1,4 @@
-"""The payment flow: TX1 (reserve) -> provider call with no transaction open -> TX2 (finalise).
+"""The payment flow: TX1 (reserve) -> provider call with no transaction open -> TX2 (finalize).
 
 ORM objects never leave this module. Each step returns plain frozen dataclasses, so nothing
 can lazy-load (and silently open a transaction) after its session is closed.
@@ -75,7 +75,7 @@ def request_fingerprint(request: PaymentRequest) -> str:
     return hashlib.sha256(f"{request.cart_id}:{payment_method}".encode()).hexdigest()
 
 
-def finalise_payment(
+def finalize_payment(
     session: Session, payment_id: UUID, outcome: Succeeded | Failed
 ) -> Payment | None:
     """FR-14: move a pending payment to its final state. Returns None if it was not pending."""
@@ -145,16 +145,16 @@ class PaymentService:
             return self._on_conflict(error, request)
         if isinstance(reserved, StoredPayment):
             return self._replay(reserved, request)
-        return self._charge_and_finalise(reserved)
+        return self._charge_and_finalize(reserved)
 
-    def _charge_and_finalise(self, attempt: ChargeAttempt) -> PaymentResult:
+    def _charge_and_finalize(self, attempt: ChargeAttempt) -> PaymentResult:
         """The provider call, then TX2, for the payment that TX1 committed as pending."""
         log = payment_log(attempt)
         outcome = self._charge(attempt, log)
         if isinstance(outcome, Unknown):
             return PaymentResult(attempt.payment)  # still pending, as committed in TX1
         try:
-            return PaymentResult(self._finalise(attempt, outcome, log))
+            return PaymentResult(self._finalize(attempt, outcome, log))
         except Exception:
             # EC-10: the provider answered but TX2 failed. The payment is almost always still
             # pending (TX2 rolled back); only if the connection dropped during COMMIT may it
@@ -298,9 +298,7 @@ class PaymentService:
             raise UnsupportedCurrencyError()
         return total
 
-    def _charge(
-        self, attempt: ChargeAttempt, log: logging.LoggerAdapter[logging.Logger]
-    ) -> Outcome:
+    def _charge(self, attempt: ChargeAttempt, log: PaymentLogAdapter) -> Outcome:
         """Call the provider with no session open (NFR-3). Only a confirmed no-charge is Failed."""
         try:
             result = self._provider.charge(
@@ -330,11 +328,11 @@ class PaymentService:
         log.error("Provider returned an unconfirmed result; payment stays pending")
         return Unknown()
 
-    def _finalise(
+    def _finalize(
         self,
         attempt: ChargeAttempt,
         outcome: Succeeded | Failed,
-        log: logging.LoggerAdapter[logging.Logger],
+        log: PaymentLogAdapter,
     ) -> PaymentView:
         """TX2: record the provider's answer. Lock order matches TX1: cart, then payment."""
         payment_id = attempt.payment.id
@@ -345,7 +343,7 @@ class PaymentService:
             if isinstance(outcome, Succeeded):
                 session.execute(select(Cart.id).where(*owned_cart).with_for_update())
 
-            payment = finalise_payment(session, payment_id, outcome)
+            payment = finalize_payment(session, payment_id, outcome)
             if payment is None:
                 log.warning("Payment was no longer pending; returning its current state")
                 return PaymentView.from_model(session.get_one(Payment, payment_id))

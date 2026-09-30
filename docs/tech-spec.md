@@ -367,7 +367,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | Provider idempotency key | `payment.id` | Client `Idempotency-Key` | One key per attempt. The client key is scoped per user, not globally unique |
 | Blocking the cart during payment | Live payment row + partial unique index | New cart status `payment_pending` | It avoids changing the base `carts` CHECK, which other services depend on |
 | Idempotent replay | Current state + matching status | Always 200 | Clients can poll a 202 with the same request |
-| Transactions | TX1 (reserve) → provider call → TX2 (finalise) | One TX around everything | A lock held during network I/O causes pool exhaustion and lock contention |
+| Transactions | TX1 (reserve) → provider call → TX2 (finalize) | One TX around everything | A lock held during network I/O causes pool exhaustion and lock contention |
 | Authentication | Verify a JWT in the service, as middleware | Trust an `X-User-Id` header from the gateway | A header is spoofable by anything that can reach the service. The token's signature makes the caller's identity verifiable |
 
 ---

@@ -218,7 +218,7 @@ generic `500`. The real total service decides that case (A-3).
 
 - **Fractional or `NaN` totals** (EC-9): cart prices are stored as `NUMERIC(12,2)`, so the mock
   can never answer them. The automated tests inject them.
-- **An unconfirmed provider answer** and **a payment finalised elsewhere during the call**
+- **An unconfirmed provider answer** and **a payment finalized elsewhere during the call**
   (FR-13, FR-14): they need a fake provider; see `tests/test_create_payment.py`.
 - **That no transaction is open during the provider call** (AC-17) and **that the card token
   never reaches a log line** (AC-16): see `tests/test_transactions.py` and
