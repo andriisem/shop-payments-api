@@ -274,8 +274,7 @@ class PaymentProvider(Protocol):
 @dataclass(frozen=True)
 class ChargeResult:
     status: Literal["succeeded", "declined"]
-    provider_payment_id: str | None
-    failure_code: str | None
+    provider_payment_id: str | None = None
 
 class ProviderRejectedError(Exception): ...   # definite: no charge happened
 class ProviderTimeoutError(Exception): ...    # unknown: charge may have happened
@@ -283,12 +282,14 @@ class ProviderTimeoutError(Exception): ...    # unknown: charge may have happene
 
 | Token contains | Mock behaviour | Payment result | HTTP |
 |---|---|---|---|
-| `decline` | `ChargeResult("declined", None, "card_declined")` | `failed` | 402 |
+| `decline` | `ChargeResult("declined")` | `failed`, `card_declined` | 402 |
 | `error` | raises `ProviderRejectedError` | `failed`, `provider_error` | 502 |
 | `timeout` | raises `ProviderTimeoutError` | stays `pending` | 202 |
-| anything else | `ChargeResult("succeeded", "mock_ch_<uuid>", None)` | `succeeded` | 201 |
+| anything else | `ChargeResult("succeeded", "mock_ch_<uuid>")` | `succeeded` | 201 |
 
 The mock remembers `idempotency_key → result`. A second call with the same key returns the same result, just like a real provider.
+
+The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `provider_payment_id` is a success, and `declined` always becomes the fixed `card_declined` (the provider's decline reason is never stored). Any other result, and any exception other than `ProviderRejectedError`, is an unknown outcome: the payment stays `pending`. A provider adapter MUST raise `ProviderRejectedError` only when it is certain that no charge happened; mapping an ambiguous 5xx or a connection reset to it would free the cart and allow a double charge.
 
 ---
 
