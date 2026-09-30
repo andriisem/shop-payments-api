@@ -389,6 +389,7 @@ tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
   test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, EC-5
   test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7…EC-9, 401
+  test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
 docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
@@ -396,5 +397,6 @@ README.md                # run app + tests, assumptions
 
 - Routes contain no business logic. The service raises domain errors, and a single error handler maps them to the status codes.
 - **SQLAlchemy autobegin vs NFR-3:** any query after the TX1 commit silently opens a new transaction, including a lazy refresh of an expired attribute such as `payment.id` (`expire_on_commit=True` is the default). Copy the values the provider call needs into locals before committing, and make sure the session has no open transaction during `provider.charge()`. AC-17 checks this.
+- **Isolation level:** the engine is pinned to READ COMMITTED. The key re-check under the cart lock (EC-2) relies on each statement seeing rows that were committed while it waited for the lock; under REPEATABLE READ it would miss them and only the unique index would catch the race.
 - Concurrency tests use real threads and separate DB sessions. The rollback-per-test fixture does not work for these tests; they need a cleanup step instead.
 - Decimal → minor units: `int((amount * 100).to_integral_value())`. This is valid for 2-decimal currencies. The exponent per currency is a documented limitation.
