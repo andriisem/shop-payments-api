@@ -145,8 +145,10 @@ class PaymentService:
             return self._on_conflict(error, request)
         if isinstance(reserved, StoredPayment):
             return self._replay(reserved, request)
+        return self._charge_and_finalise(reserved)
 
-        attempt = reserved
+    def _charge_and_finalise(self, attempt: ChargeAttempt) -> PaymentResult:
+        """The provider call, then TX2, for the payment that TX1 committed as pending."""
         log = payment_log(attempt)
         outcome = self._charge(attempt, log)
         if isinstance(outcome, Unknown):
