@@ -4,14 +4,13 @@ from typing import Any
 from uuid import UUID
 
 from flask import Request
-from werkzeug.datastructures import Headers
 
 from app.payments.errors import (
     DomainError,
     InvalidRequestError,
     MissingIdempotencyKeyError,
 )
-from app.payments.service import PaymentRequest, PaymentView
+from app.payments.service import PaymentRequest, PaymentResult, PaymentView
 
 # FR-2: 1-255 printable ASCII characters.
 IDEMPOTENCY_KEY = re.compile(r"[\x20-\x7e]{1,255}")
@@ -21,25 +20,14 @@ CANONICAL_UUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}
 ALLOWED_FIELDS = {"payment_method_id"}
 
 
-def read_body(request: Request) -> bytes:
-    """A chunked body is rejected: depending on the WSGI server it can be dropped, and an
-    empty body would silently mean "use the default card" instead of the requested one.
-    """
-    if "Transfer-Encoding" in request.headers:
-        raise InvalidRequestError()
-    return request.get_data()
-
-
-def parse_payment_request(
-    user_id: UUID, cart_id: str, headers: Headers, raw_body: bytes
-) -> PaymentRequest:
-    """Validate the rest of the request, after the caller is known."""
-    idempotency_key = headers.get("Idempotency-Key")
+def parse_payment_request(request: Request, cart_id: str, user_id: UUID) -> PaymentRequest:
+    """Validate the request of an already authenticated caller: key first, then body."""
+    idempotency_key = request.headers.get("Idempotency-Key")
     if not idempotency_key:
         raise MissingIdempotencyKeyError()
     if not IDEMPOTENCY_KEY.fullmatch(idempotency_key):
         raise InvalidRequestError()
-    body = _parse_body(raw_body)
+    body = _parse_body(_read_body(request))
     payment_method_id = body.get("payment_method_id")
     if payment_method_id is not None:
         payment_method_id = _parse_uuid(payment_method_id, InvalidRequestError)
@@ -49,6 +37,15 @@ def parse_payment_request(
         idempotency_key=idempotency_key,
         payment_method_id=payment_method_id,
     )
+
+
+def _read_body(request: Request) -> bytes:
+    """A chunked body is rejected: depending on the WSGI server it can be dropped, and an
+    empty body would silently mean "use the default card" instead of the requested one.
+    """
+    if "Transfer-Encoding" in request.headers:
+        raise InvalidRequestError()
+    return request.get_data()
 
 
 def _parse_uuid(value: object, error: type[DomainError]) -> UUID:
@@ -83,6 +80,11 @@ def serialize_payment(payment: PaymentView) -> dict[str, Any]:
         "created_at": payment.created_at.isoformat(),
         "updated_at": payment.updated_at.isoformat(),
     }
+
+
+def payment_response(result: PaymentResult) -> tuple[dict[str, Any], int, dict[str, str]]:
+    headers = {"Idempotent-Replayed": "true"} if result.replayed else {}  # FR-3
+    return serialize_payment(result.payment), http_status(result.payment), headers
 
 
 def http_status(payment: PaymentView) -> int:

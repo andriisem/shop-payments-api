@@ -1,15 +1,10 @@
-from typing import Any
-from uuid import UUID
+from typing import cast
 
-from flask import Blueprint, current_app, g, request
+from flask import Blueprint, current_app, request
+from flask.typing import ResponseReturnValue
 
-from app.auth import require_authenticated_user
-from app.payments.schemas import (
-    http_status,
-    parse_payment_request,
-    read_body,
-    serialize_payment,
-)
+from app.auth import current_user_id, require_authenticated_user
+from app.payments.schemas import parse_payment_request, payment_response
 from app.payments.service import PaymentService
 
 payments = Blueprint("payments", __name__)
@@ -18,12 +13,12 @@ payments = Blueprint("payments", __name__)
 payments.before_request(require_authenticated_user)
 
 
+def payment_service() -> PaymentService:
+    return cast(PaymentService, current_app.extensions["payment_service"])
+
+
 @payments.post("/carts/<cart_id>/payments")
-def create_payment(cart_id: str) -> tuple[dict[str, Any], int, dict[str, str]]:
-    service: PaymentService = current_app.extensions["payment_service"]
-    user_id: UUID = g.user_id  # set by require_authenticated_user (NFR-9)
-    raw_body = read_body(request)
-    payment_request = parse_payment_request(user_id, cart_id, request.headers, raw_body)
-    result = service.pay_cart(payment_request)
-    headers = {"Idempotent-Replayed": "true"} if result.replayed else {}
-    return serialize_payment(result.payment), http_status(result.payment), headers
+def create_payment(cart_id: str) -> ResponseReturnValue:
+    payment_request = parse_payment_request(request, cart_id, user_id=current_user_id())
+    result = payment_service().pay_cart(payment_request)
+    return payment_response(result)

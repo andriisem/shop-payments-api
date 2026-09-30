@@ -90,6 +90,12 @@ class Authenticator:
         return user_id
 
 
+def current_user_id() -> UUID:
+    """The caller verified by require_authenticated_user for this request."""
+    user_id: UUID = g.user_id
+    return user_id
+
+
 def require_authenticated_user() -> None:
     """before_request middleware: sets g.user_id, or answers 401 before the route runs."""
     if request.method == "OPTIONS":
