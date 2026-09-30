@@ -16,6 +16,13 @@ from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.external import (
+    CartTotal,
+    PaymentProvider,
+    ProviderRejectedError,
+    ProviderTimeoutError,
+    TotalService,
+)
 from app.models import Cart, CartItem, Payment, UserPaymentMethod
 from app.payments.errors import (
     CartEmptyError,
@@ -27,8 +34,6 @@ from app.payments.errors import (
     PaymentInProgressError,
     PaymentMethodNotFoundError,
 )
-from app.payments.provider import PaymentProvider, ProviderRejectedError, ProviderTimeoutError
-from app.payments.totals import CartTotal, CartTotalService
 
 logger = logging.getLogger(__name__)
 
@@ -152,11 +157,11 @@ class PaymentService:
         self,
         session_factory: sessionmaker[Session],
         provider: PaymentProvider,
-        totals: CartTotalService,
+        total_service: TotalService,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
-        self._totals = totals
+        self._total_service = total_service
 
     def pay_cart(self, request: PaymentRequest) -> PaymentResult:
         with self._session_factory() as session:
@@ -234,8 +239,8 @@ class PaymentService:
                 return stored
             self._check_payable(session, cart, request)
             payment_method = self._resolve_payment_method(session, request)
-            total = self._calculate_total(session, cart)
-            amount_minor = to_minor_units(total.amount)  # rejects >2 decimals before quantizing
+            total = self._get_total(cart)
+            amount_minor = to_minor_units(total.amount)
             payment = Payment(
                 cart_id=cart.id,
                 user_id=request.user_id,
@@ -308,10 +313,13 @@ class PaymentService:
             raise NoPaymentMethodError()
         return default
 
-    def _calculate_total(self, session: Session, cart: Cart) -> CartTotal:
-        """FR-8: the amount comes from the total service and must be positive."""
-        total = self._totals.calculate(session, cart.id)
-        if total.amount <= 0:
+    def _get_total(self, cart: Cart) -> CartTotal:
+        """FR-8: ask the existing total service (A-3), under the cart lock. Never calculate.
+
+        Whatever it answers, we only charge a positive amount in whole cents (EC-9).
+        """
+        total = self._total_service.get_total(cart.id)
+        if total.amount <= 0 or total.amount != total.amount.quantize(CENT):
             raise InvalidAmountError()
         return total
 

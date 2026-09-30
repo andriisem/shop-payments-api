@@ -5,7 +5,7 @@ from flask.testing import FlaskClient
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import sessionmaker
 
-from app.payments.provider import ChargeResult
+from app.external import ChargeResult
 from app.payments.service import Failed, finalise_payment
 from tests.factories import CartFixture, insert_payment
 from tests.fakes import ChargeCall, RecordingProvider

@@ -1,7 +1,9 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from decimal import Decimal
+from uuid import UUID
 
-from app.payments.provider import ChargeResult, MockPaymentProvider
+from app.external import CartTotal, ChargeResult, MockPaymentProvider
 
 
 @dataclass(frozen=True)
@@ -38,3 +40,15 @@ class RecordingProvider:
             currency=currency,
             idempotency_key=idempotency_key,
         )
+
+
+class FakeTotalService:
+    """Stands in for the shop's existing total service: returns whatever the test sets."""
+
+    def __init__(self) -> None:
+        self.total = CartTotal(Decimal("70.00"), "USD")  # Alice's cart, as in AC-1
+        self.calls: list[UUID] = []
+
+    def get_total(self, cart_id: UUID) -> CartTotal:
+        self.calls.append(cart_id)
+        return self.total

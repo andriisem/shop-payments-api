@@ -1,6 +1,43 @@
+"""Systems outside the payment part, and their local stand-ins.
+
+The payment provider charges cards; the shop's existing total service says how much a cart
+costs. The payment part only calls them: it never charges on its own or calculates a total.
+"""
+
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, Protocol
+from uuid import UUID
+
+
+@dataclass(frozen=True)
+class CartTotal:
+    amount: Decimal
+    currency: str
+
+
+class TotalService(Protocol):
+    """The shop's existing total service (A-3). Not ours to build."""
+
+    def get_total(self, cart_id: UUID) -> CartTotal: ...
+
+
+# The base schema's sample cart: 1 x 45.00 + 2 x 12.50 USD.
+SAMPLE_CART_TOTAL = CartTotal(Decimal("70.00"), "USD")
+
+
+class FixedTotalService:
+    """Stand-in for the existing total service in local runs: always the same total.
+
+    It never looks at the cart, so there is no calculation here.
+    """
+
+    def __init__(self, total: CartTotal = SAMPLE_CART_TOTAL) -> None:
+        self._total = total
+
+    def get_total(self, cart_id: UUID) -> CartTotal:
+        return self._total
 
 
 @dataclass(frozen=True)

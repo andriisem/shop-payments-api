@@ -10,14 +10,13 @@ from flask.testing import FlaskClient
 from sqlalchemy import Engine, text
 from werkzeug.test import TestResponse
 
+from app.external import CartTotal
 from tests.factories import (
     CartFixture,
     insert_cart,
-    insert_cart_item,
     insert_payment_method,
-    insert_product,
 )
-from tests.fakes import RecordingProvider
+from tests.fakes import FakeTotalService, RecordingProvider
 from tests.helpers import add_card, pay, payment_count
 from tests.tokens import auth_headers
 
@@ -291,32 +290,34 @@ def test_ac14_live_payment_blocks_a_new_key(
     assert payment_count(engine) == 1
 
 
-def test_ec8_mixed_currencies_are_rejected(
-    client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
-) -> None:
-    with engine.begin() as conn:
-        euro_product = insert_product(conn, Decimal("10.00"), currency="EUR")
-        insert_cart_item(conn, alice.cart_id, euro_product, 1, Decimal("10.00"))
-
-    response = pay(client, alice)
-
-    assert_rejected(response, 422, "mixed_currencies", engine, provider)
-
-
-@pytest.mark.parametrize("unit_price", [Decimal("0.00"), Decimal("-5.00")])
-def test_ec9_total_must_be_positive(
+@pytest.mark.parametrize(
+    "amount",
+    [Decimal("0.00"), Decimal("-5.00"), Decimal("70.005")],
+    ids=["zero", "negative", "fraction-of-a-cent"],
+)
+def test_ec9_total_must_be_positive_whole_cents(
     client: FlaskClient,
     engine: Engine,
     alice: CartFixture,
     provider: RecordingProvider,
-    unit_price: Decimal,
+    total_service: FakeTotalService,
+    amount: Decimal,
 ) -> None:
-    with engine.begin() as conn:
-        conn.execute(
-            text("UPDATE cart_items SET unit_price = :price WHERE cart_id = :id"),
-            {"price": unit_price, "id": alice.cart_id},
-        )
+    total_service.total = CartTotal(amount, "USD")
 
     response = pay(client, alice)
 
     assert_rejected(response, 422, "invalid_amount", engine, provider)
+
+
+def test_a3_amount_is_whatever_the_total_service_says(
+    client: FlaskClient, alice: CartFixture, total_service: FakeTotalService
+) -> None:
+    total_service.total = CartTotal(Decimal("12.3"), "EUR")
+
+    response = pay(client, alice)
+
+    assert response.status_code == 201
+    assert response.get_json()["amount"] == "12.30"
+    assert response.get_json()["currency"] == "EUR"
+    assert total_service.calls == [alice.cart_id]

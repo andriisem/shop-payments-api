@@ -21,8 +21,8 @@ from sqlalchemy.exc import IntegrityError
 from werkzeug.test import TestResponse
 
 from app.config import Config
+from app.external import ChargeResult
 from app.payments.errors import PaymentInProgressError
-from app.payments.provider import ChargeResult
 from app.payments.service import PaymentRequest, PaymentService
 from tests.factories import (
     CartFixture,

@@ -67,10 +67,6 @@ class NoPaymentMethodError(DomainError):
     code, status, message = "no_payment_method", 422, "No payment method given and no default."
 
 
-class MixedCurrenciesError(DomainError):
-    code, status, message = "mixed_currencies", 422, "Cart items have different currencies."
-
-
 class IdempotencyKeyReusedError(DomainError):
     code, status, message = (
         "idempotency_key_reused",
@@ -80,7 +76,7 @@ class IdempotencyKeyReusedError(DomainError):
 
 
 class InvalidAmountError(DomainError):
-    code, status, message = "invalid_amount", 422, "Cart total must be greater than zero."
+    code, status, message = "invalid_amount", 422, "Cart total must be positive, in cents."
 
 
 def handle_domain_error(error: DomainError) -> tuple[dict[str, Any], int, dict[str, str]]:

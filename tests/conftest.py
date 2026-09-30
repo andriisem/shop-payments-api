@@ -11,7 +11,7 @@ from sqlalchemy import Engine, create_engine, make_url, text
 from app import create_app
 from app.config import Config
 from tests.factories import CartFixture, create_cart_fixture
-from tests.fakes import RecordingProvider
+from tests.fakes import FakeTotalService, RecordingProvider
 from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
 
 TEST_DATABASE_URL = os.environ.get(
@@ -85,8 +85,13 @@ def provider() -> RecordingProvider:
 
 
 @pytest.fixture
-def app(provider: RecordingProvider) -> Iterator[Flask]:
-    app = create_app(make_test_config(), provider=provider)
+def total_service() -> FakeTotalService:
+    return FakeTotalService()
+
+
+@pytest.fixture
+def app(provider: RecordingProvider, total_service: FakeTotalService) -> Iterator[Flask]:
+    app = create_app(make_test_config(), provider=provider, total_service=total_service)
     yield app
     app.extensions["engine"].dispose()
 

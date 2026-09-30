@@ -4,21 +4,25 @@ from sqlalchemy import create_engine
 from app.auth import Authenticator, TokenVerifier
 from app.config import Config
 from app.db import create_session_factory
+from app.external import (
+    FixedTotalService,
+    MockPaymentProvider,
+    PaymentProvider,
+    TotalService,
+)
 from app.payments.errors import (
     DomainError,
     handle_domain_error,
 )
-from app.payments.provider import MockPaymentProvider, PaymentProvider
 from app.payments.routes import payments
 from app.payments.service import PaymentService
-from app.payments.totals import CartTotalService, DefaultCartTotalService
 
 
 def create_app(
     config: Config | None = None,
     *,
     provider: PaymentProvider | None = None,
-    totals: CartTotalService | None = None,
+    total_service: TotalService | None = None,
 ) -> Flask:
     config = config or Config.from_env()
     engine = create_engine(
@@ -38,7 +42,7 @@ def create_app(
     app.extensions["payment_service"] = PaymentService(
         session_factory,
         provider=provider or MockPaymentProvider(),
-        totals=totals or DefaultCartTotalService(),
+        total_service=total_service or FixedTotalService(),
     )
     app.register_blueprint(payments)
     app.register_error_handler(DomainError, handle_domain_error)
