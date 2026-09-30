@@ -175,7 +175,8 @@ Each decision below serves one of these.
 
 - **Alert on `Provider result … was not recorded`.** It means the provider answered but the
   database could not record it. The payment stays `pending` and the cart stays blocked until
-  someone reconciles it with the provider, looking it up by the payment id. The index
+  someone reconciles it with the provider, looking it up by the payment id. Every payment log
+  line starts with `[payment_id=… cart_id=… user_id=…]`, so the line says which one. The index
   `idx_payments_pending_created_at` supports finding stuck payments.
 - **A real total service client** must use a short timeout, because it is called while the cart
   is locked. A real provider client must use an explicit timeout and raise

@@ -6,6 +6,8 @@ can lazy-load (and silently open a transaction) after its session is closed.
 
 import hashlib
 import logging
+from collections.abc import MutableMapping
+from typing import Any
 from uuid import UUID
 
 import psycopg
@@ -92,14 +94,32 @@ def finalise_payment(
     ).one_or_none()
 
 
-def payment_log(attempt: ChargeAttempt) -> logging.LoggerAdapter[logging.Logger]:
-    """NFR-7: every log line about a payment carries its payment, cart and user ids."""
+class PaymentLogAdapter(logging.LoggerAdapter[logging.Logger]):
+    """NFR-7: every log line about a payment carries its payment, cart and user ids.
+
+    The ids are written into the message text, so they show up whatever the log format is,
+    and an operator can see which payment to reconcile. They also stay on the log record as
+    fields, for structured log handlers.
+    """
+
+    # Same signature as LoggerAdapter.process in the standard library's type stubs.
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> tuple[Any, MutableMapping[str, Any]]:
+        msg, kwargs = super().process(msg, kwargs)
+        ids = " ".join(f"{name}={value}" for name, value in (self.extra or {}).items())
+        return f"[{ids}] {msg}", kwargs
+
+
+def payment_log(attempt: ChargeAttempt) -> PaymentLogAdapter:
+    # Every entry is printed into every payment log line: ids only. Never add the token,
+    # the amount or anything else a log reader should not see (NFR-4).
     context = {
         "payment_id": str(attempt.payment.id),
         "cart_id": str(attempt.payment.cart_id),
         "user_id": str(attempt.user_id),
     }
-    return logging.LoggerAdapter(logger, context)
+    return PaymentLogAdapter(logger, context)
 
 
 class PaymentService:

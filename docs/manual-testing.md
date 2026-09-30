@@ -180,8 +180,10 @@ db "DROP TRIGGER fail_update ON payments"; db "DROP FUNCTION fail_update()"
 
 The `db` lines print `CREATE FUNCTION`, `CREATE TRIGGER` and so on. Expected for the payment:
 `202`, `"status":"pending"`, not a 500. The card was charged but could not be
-recorded, so the server log shows `Provider result Succeeded(provider_payment_id='mock_ch_…')
-was not recorded`. The payment stays `pending` and blocks the cart until it is reconciled.
+recorded, so the server log shows `[payment_id=… cart_id=… user_id=…] Provider result
+Succeeded(provider_payment_id='mock_ch_…') was not recorded; answering pending`, followed by the
+traceback of the simulated failure (with SQL parameters hidden). The payment stays `pending` and
+blocks the cart until it is reconciled.
 
 ## 11. Totals come from the total service (A-3, EC-9, EC-11)
 

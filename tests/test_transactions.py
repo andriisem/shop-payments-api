@@ -82,7 +82,12 @@ def test_ac18_db_error_in_tx2_keeps_the_payment_pending(
     assert cart_status(engine, alice) == "active"  # still blocked by the live payment
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert [getattr(r, "payment_id", None) for r in errors] == [payment["id"]]
-    assert "mock_ch_" in errors[0].getMessage()  # the provider result, for reconciliation
+    message = errors[0].getMessage()
+    assert "mock_ch_" in message  # the provider result, for reconciliation
+    # NFR-7: the ids are in the text itself, so they show with any log format.
+    assert f"payment_id={payment['id']}" in message
+    assert f"cart_id={alice.cart_id}" in message
+    assert f"user_id={alice.user_id}" in message
 
 
 @pytest.mark.usefixtures("break_tx2")
