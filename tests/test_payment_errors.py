@@ -13,14 +13,13 @@ from werkzeug.test import TestResponse
 
 from app import create_app
 from app.external import CartTotal
-from tests.conftest import make_test_config
 from tests.factories import (
     CartFixture,
     insert_cart,
     insert_payment_method,
 )
 from tests.fakes import FakeTotalService, RecordingProvider
-from tests.helpers import add_card, pay, payment_count
+from tests.helpers import add_card, make_test_config, pay, payment_count, post_payment
 from tests.tokens import auth_headers
 
 
@@ -40,15 +39,6 @@ def assert_rejected(
     return error
 
 
-def post(
-    client: FlaskClient,
-    cart_id: object,
-    headers: dict[str, str],
-    **kwargs: Any,
-) -> TestResponse:
-    return client.post(f"/carts/{cart_id}/payments", headers=headers, **kwargs)
-
-
 @pytest.mark.parametrize("key", [None, ""], ids=["missing", "empty"])
 def test_ac4_idempotency_key_is_required(
     client: FlaskClient,
@@ -61,7 +51,7 @@ def test_ac4_idempotency_key_is_required(
     if key is not None:
         headers["Idempotency-Key"] = key
 
-    response = post(client, alice.cart_id, headers, json={})
+    response = post_payment(client, alice.cart_id, headers, json={})
 
     assert_rejected(response, 400, "missing_idempotency_key", engine, provider)
 
@@ -76,7 +66,7 @@ def test_fr2_idempotency_key_must_be_printable_ascii_up_to_255(
 ) -> None:
     headers = {**auth_headers(alice.user_id), "Idempotency-Key": key}
 
-    response = post(client, alice.cart_id, headers, json={})
+    response = post_payment(client, alice.cart_id, headers, json={})
 
     assert_rejected(response, 400, "invalid_request", engine, provider)
 
@@ -118,7 +108,7 @@ def test_ec7_malformed_request_is_invalid(
 ) -> None:
     headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
-    response = post(client, cart_id or alice.cart_id, headers, **request_kwargs)
+    response = post_payment(client, cart_id or alice.cart_id, headers, **request_kwargs)
 
     assert_rejected(response, 400, "invalid_request", engine, provider)
 
@@ -136,7 +126,7 @@ def test_request_without_a_card_uses_the_default_card(
 ) -> None:
     headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
-    response = post(client, alice.cart_id, headers, **request_kwargs)
+    response = post_payment(client, alice.cart_id, headers, **request_kwargs)
 
     assert response.status_code == 201
     assert response.get_json()["payment_method_id"] == str(alice.payment_method_id)
@@ -154,7 +144,7 @@ def test_missing_key_is_reported_before_a_bad_body(
 ) -> None:
     headers = auth_headers(alice.user_id)
 
-    response = post(client, alice.cart_id, headers, data="{not json")
+    response = post_payment(client, alice.cart_id, headers, data="{not json")
 
     assert_rejected(response, 400, "missing_idempotency_key", engine, provider)
 
@@ -170,7 +160,9 @@ def test_chunked_body_is_rejected(
         "Transfer-Encoding": "chunked",
     }
 
-    response = post(client, alice.cart_id, headers, json={"payment_method_id": str(uuid.uuid4())})
+    response = post_payment(
+        client, alice.cart_id, headers, json={"payment_method_id": str(uuid.uuid4())}
+    )
 
     assert_rejected(response, 400, "invalid_request", engine, provider)
 
@@ -184,7 +176,7 @@ def test_ac5_another_users_cart_is_not_found(
 ) -> None:
     headers = {**auth_headers(bob.user_id), "Idempotency-Key": "key-1"}
 
-    response = post(client, alice.cart_id, headers, json={})
+    response = post_payment(client, alice.cart_id, headers, json={})
 
     assert_rejected(response, 404, "cart_not_found", engine, provider)
 
@@ -194,7 +186,7 @@ def test_fr5_missing_cart_is_not_found(
 ) -> None:
     headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
-    response = post(client, uuid.uuid4(), headers, json={})
+    response = post_payment(client, uuid.uuid4(), headers, json={})
 
     assert_rejected(response, 404, "cart_not_found", engine, provider)
 

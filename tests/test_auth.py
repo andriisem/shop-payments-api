@@ -13,16 +13,12 @@ from sqlalchemy import Engine
 
 from tests.factories import CartFixture
 from tests.fakes import RecordingProvider
-from tests.helpers import payment_count
+from tests.helpers import payment_count, post_payment
 from tests.tokens import JWT_SECRET, auth_headers, make_token
 
 
 def post_with(client: FlaskClient, cart: CartFixture, headers: dict[str, str]) -> Any:
-    return client.post(
-        f"/carts/{cart.cart_id}/payments",
-        headers={"Idempotency-Key": "key-1", **headers},
-        json={},
-    )
+    return post_payment(client, cart.cart_id, {"Idempotency-Key": "key-1", **headers}, json={})
 
 
 def unsigned_token(claims: dict[str, Any]) -> str:

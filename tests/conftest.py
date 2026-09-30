@@ -1,4 +1,3 @@
-import os
 import re
 from collections.abc import Generator, Iterator
 from pathlib import Path
@@ -9,25 +8,10 @@ from flask.testing import FlaskClient
 from sqlalchemy import Engine, create_engine, make_url, text
 
 from app import create_app
-from app.config import Config
 from app.external import ChargeResult
 from tests.factories import CartFixture, create_cart_fixture
 from tests.fakes import ChargeCall, FakeTotalService, RecordingProvider
-from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL", "postgresql+psycopg://shop:shop@localhost:5434/shop_payments_test"
-)
-
-
-def make_test_config() -> Config:
-    return Config(
-        database_url=TEST_DATABASE_URL,
-        jwt_secret=JWT_SECRET,
-        jwt_issuer=JWT_ISSUER,
-        jwt_audience=JWT_AUDIENCE,
-    )
-
+from tests.helpers import TEST_DATABASE_URL, make_test_config
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 

@@ -17,7 +17,6 @@ from sqlalchemy.orm import sessionmaker
 from app import create_app, create_local_app
 from app.config import Config
 from app.external import CartTotal, ChargeResult, MockPaymentProvider, MockTotalService
-from tests.conftest import TEST_DATABASE_URL, make_test_config
 from tests.factories import (
     CartFixture,
     fetch_value,
@@ -26,7 +25,7 @@ from tests.factories import (
     insert_product,
 )
 from tests.fakes import RecordingProvider
-from tests.helpers import pay
+from tests.helpers import TEST_DATABASE_URL, make_test_config, pay
 from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
 
 
