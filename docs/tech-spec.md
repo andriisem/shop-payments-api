@@ -33,7 +33,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 
 | # | Assumption | Reason |
 |---|---|---|
-| A-1 | The caller's identity comes from an `X-User-Id` header, set by a trusted gateway. | No auth system exists. The header is spoofable, so it is only safe behind a gateway. |
+| A-1 | The caller's identity comes from a JWT access token issued by the shop's identity provider, sent as `Authorization: Bearer <token>`. The service verifies the token itself (NFR-9) instead of trusting the network. | The task has no auth system. A plain identity header set by a gateway is spoofable by anything that can reach the service; a payment endpoint must be able to verify who is paying (zero trust). |
 | A-2 | The endpoint calls the provider **synchronously**. If the outcome is unknown (timeout), the response is `202` and the client polls by repeating the request with the same idempotency key. | The mock needs no webhooks, and the same design still works with a real provider. |
 | A-3 | The total-calculation service is an injected interface. The default implementation is `sum(quantity * unit_price)` over the cart items. It runs **inside TX1**, on the same session, while the cart is locked, so the amount matches the locked items. It MUST be in-process DB work. A remote total service would be network I/O under a row lock (NFR-3) and would need a different design. | The task says this service exists. |
 | A-4 | A cart has one currency. A cart with mixed currencies is rejected. | The base schema stores currency per product only. |
@@ -76,6 +76,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 | NFR-6 | **Timeouts:** the provider call has an explicit timeout (config, default 10 s). |
 | NFR-7 | **Observability:** every log line for a payment carries `payment_id`, `cart_id` and `user_id`. |
 | NFR-8 | **Testability:** the provider, the total service and the clock are injected via `create_app()`. Tests run against a real PostgreSQL, because partial indexes and `FOR UPDATE` cannot be tested on SQLite. |
+| NFR-9 | **Authentication:** every request MUST carry `Authorization: Bearer <JWT>`. The service verifies the signature (HS256 with a secret of at least 32 bytes from config; only that algorithm is accepted, never `none`), `exp` (required, 30 s leeway for clock skew), `iat` (required, not in the future; a token may live at most 15 minutes, `exp − iat ≤ 900 s`), `nbf` when present, `iss` and `aud` (`aud` may be a list that contains this service, per RFC 7519). `exp` and `iat` MUST be numbers. The JWT header `typ` MUST be `at+jwt` or `application/at+jwt`, case-insensitive (RFC 9068), so ID tokens and refresh tokens are rejected even if their other claims match. `sub` is the user id as a canonical UUID, and the user MUST exist. Any failure is `401 unauthenticated` with `WWW-Authenticate: Bearer`; the reason is logged, never returned. Authentication runs as middleware before the route, so the route and the service only see a verified `user_id`. `OPTIONS` is answered without a token (200 with `Allow`, no data), because CORS preflights never carry credentials. |
 
 ---
 
@@ -129,7 +130,7 @@ stateDiagram-v2
 
 ```
 POST /carts/{cart_id}/payments
-X-User-Id: <uuid>                 (required)
+Authorization: Bearer <JWT>       (required, NFR-9)
 Idempotency-Key: <1–255 ASCII>    (required)
 Content-Type: application/json
 ```
@@ -140,7 +141,7 @@ interface CreatePaymentRequest {
 }
 ```
 
-An empty body, `{}` and `"payment_method_id": null` all mean "use the default method". Any other field (for example `amount`, see FR-8), a body that is not a JSON object, or malformed JSON is `400 invalid_request`. Validation order: `X-User-Id` (401, including a well-formed but unknown user), then the body size (411 for a chunked body without a length, 413 over 16 KB), then `Idempotency-Key` and body (400), then the cart and business rules. Chunked bodies are rejected because, depending on the WSGI server, they can be cut or dropped, and a dropped body would mean "use the default card".
+An empty body, `{}` and `"payment_method_id": null` all mean "use the default method". Any other field (for example `amount`, see FR-8), a body that is not a JSON object, or malformed JSON is `400 invalid_request`. Validation order: the token (401, including a valid token for an unknown user), then the body size (411 for a chunked body without a length, 413 over 16 KB), then `Idempotency-Key` and body (400), then the cart and business rules. Chunked bodies are rejected because, depending on the WSGI server, they can be cut or dropped, and a dropped body would mean "use the default card".
 
 ### Response
 
@@ -178,7 +179,7 @@ A replayed response has the header `Idempotent-Replayed: true`.
 | 201 | `Payment` succeeded | Card charged |
 | 202 | `Payment` pending | Outcome unknown. Retry with the same key to get the result |
 | 400 | `missing_idempotency_key`, `invalid_request` | Missing header, bad UUID, bad body |
-| 401 | `unauthenticated` | `X-User-Id` missing or unknown |
+| 401 | `unauthenticated` | Token missing, invalid or expired, or its user is unknown (with `WWW-Authenticate: Bearer`) |
 | 402 | `Payment` failed, `card_declined` | Provider declined |
 | 404 | `cart_not_found`, `payment_method_not_found` | Missing, or owned by another user |
 | 409 | `cart_not_active`, `payment_in_progress` | Cart checked out or abandoned; a live payment exists under another key |
@@ -321,6 +322,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | AC-18 | **Given** a provider that returns success **When** TX2 raises a DB error **Then** 202, the payment stays `pending`, and the error is logged with `payment_id` | FR-13, EC-10 |
 | AC-19 | **Given** AC-1 sent without `payment_method_id` **When** the user changes their default card and resends the same key and body **Then** 201 replay of the original payment, not 422 | FR-3,4 |
 | AC-20 | **Given** two parallel requests with the same key for one cart **Then** both return the same payment id, one provider call, and neither returns 409 | FR-3, EC-2 |
+| AC-21 | **Given** a request whose token is missing, not `Bearer`, badly signed, signed with another algorithm or `none`, expired, not yet valid (`iat` or `nbf` in the future), without `iat`, with non-numeric `exp`/`iat`, valid for more than 15 minutes, without an access-token `typ`, for another issuer or audience, without a canonical-UUID `sub`, or for an unknown user **Then** 401 `unauthenticated` with `WWW-Authenticate: Bearer`, the provider is not called and no payment is created | NFR-9 |
 
 ## 9. Edge Cases
 
@@ -332,7 +334,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | EC-4 | Provider timeout | Same as EC-3: `pending` + 202, never `failed` |
 | EC-5 | The cart becomes `abandoned` / `checked_out` between TX1 and TX2 | This is prevented by FR-15. TX2 still locks the cart and only moves `active → checked_out`. If the cart is not `active`, it logs an error for manual review and does not overwrite it |
 | EC-6 | Several `is_default = true` methods | The most recently created one wins (A-5) |
-| EC-7 | Invalid UUID in path or body | 400 `invalid_request`. Only the canonical `8-4-4-4-12` hex form is valid (no `urn:uuid:`, braces or missing dashes); a malformed `X-User-Id` is 401 |
+| EC-7 | Invalid UUID in path or body | 400 `invalid_request`. Only the canonical `8-4-4-4-12` hex form is valid (no `urn:uuid:`, braces or missing dashes); a token whose `sub` is not a canonical UUID is 401 |
 | EC-8 | Cart items in different currencies | 422 `mixed_currencies` |
 | EC-9 | Total is 0 | 422 `invalid_amount` (the DB CHECK is the backstop) |
 | EC-10 | TX2 fails (DB error, lost connection) after the provider returned a result | TX2 rolls back, so the payment stays `pending`. The response reflects the DB state: 202, never 500 and never `failed`. Log an error with `payment_id` and the provider result for reconciliation. A same-key retry replays 202 until reconciled (OS-5) |
@@ -343,7 +345,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 
 | ID | Item | Reason |
 |---|---|---|
-| OS-1 | Real authentication | `X-User-Id` from a trusted gateway stands in (A-1) |
+| OS-1 | Login, token issuance and refresh tokens (the client refreshes with the identity provider; this service only accepts short-lived access tokens), asymmetric keys (RS256 via the provider's JWKS) and key rotation, scopes, token revocation, mTLS between gateway and service | The service only verifies tokens (NFR-9). Locally a shared HS256 secret stands in for the identity provider's keys; the claim checks stay the same with JWKS |
 | OS-2 | Real provider, webhooks, 3-D Secure / SCA | A mock is allowed. Webhooks would be the production way to resolve `pending` |
 | OS-3 | Refunds, partial payments, split tenders | Not requested |
 | OS-4 | Stock reservation / decrement, order creation | Fulfilment domain. Risk: paying for out-of-stock items |
@@ -363,6 +365,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | Blocking the cart during payment | Live payment row + partial unique index | New cart status `payment_pending` | It avoids changing the base `carts` CHECK, which other services depend on |
 | Idempotent replay | Current state + matching status | Always 200 | Clients can poll a 202 with the same request |
 | Transactions | TX1 (reserve) → provider call → TX2 (finalise) | One TX around everything | A lock held during network I/O causes pool exhaustion and lock contention |
+| Authentication | Verify a JWT in the service, as middleware | Trust an `X-User-Id` header from the gateway | A header is spoofable by anything that can reach the service. The token's signature makes the caller's identity verifiable |
 
 ---
 
@@ -371,7 +374,8 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 ```
 app/
   __init__.py            # create_app(provider=..., totals=...) factory
-  config.py              # DATABASE_URL, PROVIDER_TIMEOUT_SECONDS
+  auth.py                # JWT verification + before_request middleware (NFR-9)
+  config.py              # DATABASE_URL, PROVIDER_TIMEOUT_SECONDS, JWT_SECRET/ISSUER/AUDIENCE
   db.py                  # engine, session
   models.py              # User, Cart, CartItem, UserPaymentMethod, Payment
   payments/
@@ -387,8 +391,9 @@ migrations/
   003_payments_checks.sql # failure_code and succeeded-state CHECKs
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
+  test_auth.py           # AC-21: token checks
   test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, EC-5
-  test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7…EC-9, 401
+  test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7…EC-9
   test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
 docker-compose.yml       # postgres:16
