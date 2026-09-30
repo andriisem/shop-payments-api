@@ -4,17 +4,12 @@ creates a payment."""
 import uuid
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
 import pytest
 from flask.testing import FlaskClient
 from sqlalchemy import Engine, text
-from sqlalchemy.orm import Session
 from werkzeug.test import TestResponse
 
-from app import create_app
-from app.payments.totals import CartTotal
-from tests.conftest import make_test_config
 from tests.factories import (
     CartFixture,
     insert_cart,
@@ -152,17 +147,6 @@ def test_fr2_idempotency_key_of_255_characters_is_accepted(
     assert pay(client, alice, key="k" * 255).status_code == 201
 
 
-def test_oversized_body_is_rejected_as_json(
-    client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
-) -> None:
-    headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
-    body = '{"payment_method_id": "' + "x" * 20_000 + '"}'
-
-    response = post(client, alice.cart_id, headers, data=body, content_type="application/json")
-
-    assert_rejected(response, 413, "request_entity_too_large", engine, provider)
-
-
 def test_missing_key_is_reported_before_a_bad_body(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
@@ -186,40 +170,7 @@ def test_chunked_body_is_rejected(
 
     response = post(client, alice.cart_id, headers, json={"payment_method_id": str(uuid.uuid4())})
 
-    assert_rejected(response, 411, "length_required", engine, provider)
-
-
-def test_wrong_method_is_rejected_as_json(client: FlaskClient, alice: CartFixture) -> None:
-    response = client.get(f"/carts/{alice.cart_id}/payments")
-
-    assert response.status_code == 405
-    assert response.get_json()["error"]["code"] == "method_not_allowed"
-    assert set(response.headers["Allow"].split(", ")) == {"OPTIONS", "POST"}
-
-
-def test_unknown_route_is_rejected_as_json(client: FlaskClient) -> None:
-    response = client.post("/carts")
-
-    assert response.status_code == 404
-    assert response.get_json()["error"]["code"] == "not_found"
-
-
-def test_unexpected_error_returns_generic_json_500(
-    engine: Engine, alice: CartFixture, provider: RecordingProvider
-) -> None:
-    class BrokenTotals:
-        def calculate(self, session: Session, cart_id: UUID) -> CartTotal:
-            raise RuntimeError("secret internal detail")
-
-    app = create_app(make_test_config(), provider=provider, totals=BrokenTotals())
-    try:
-        response = pay(app.test_client(), alice)
-    finally:
-        app.extensions["engine"].dispose()
-
-    error = assert_rejected(response, 500, "internal_error", engine, provider)
-    assert "secret" not in response.get_data(as_text=True)
-    assert error["message"] == "Internal server error."
+    assert_rejected(response, 400, "invalid_request", engine, provider)
 
 
 def test_ac5_another_users_cart_is_not_found(

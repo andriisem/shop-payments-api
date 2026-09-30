@@ -1,13 +1,7 @@
 """Domain errors. Each carries its API error code and HTTP status; one handler renders them."""
 
-import logging
-import re
 from typing import Any, ClassVar
 from uuid import UUID
-
-from werkzeug.exceptions import HTTPException
-
-logger = logging.getLogger(__name__)
 
 
 class DomainError(Exception):
@@ -91,22 +85,3 @@ class InvalidAmountError(DomainError):
 
 def handle_domain_error(error: DomainError) -> tuple[dict[str, Any], int, dict[str, str]]:
     return error.body(), error.status, error.headers()
-
-
-def handle_http_error(
-    error: HTTPException,
-) -> tuple[dict[str, Any], int, list[tuple[str, str]]]:
-    """Framework errors (404, 405, 411, 413) in the same shape: "Not Found" -> not_found.
-
-    Keeps the error's own headers (e.g. Allow on a 405) except its HTML content type.
-    """
-    name = error.name or "Error"
-    code = re.sub(r"\W+", "_", name.lower())
-    headers = [(k, v) for k, v in error.get_headers() if k.lower() != "content-type"]
-    return {"error": {"code": code, "message": f"{name}."}}, error.code or 500, headers
-
-
-def handle_unexpected_error(error: Exception) -> tuple[dict[str, Any], int]:
-    """Never expose internal details. Payment-path errors never carry the card token."""
-    logger.exception("Unhandled error")
-    return {"error": {"code": "internal_error", "message": "Internal server error."}}, 500

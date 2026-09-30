@@ -5,7 +5,6 @@ from uuid import UUID
 
 from flask import Request
 from werkzeug.datastructures import Headers
-from werkzeug.exceptions import LengthRequired
 
 from app.payments.errors import (
     DomainError,
@@ -23,14 +22,12 @@ ALLOWED_FIELDS = {"payment_method_id"}
 
 
 def read_body(request: Request) -> bytes:
-    """411/413 come before key and body validation, because the body is read first.
-
-    A chunked body has no length: depending on the WSGI server it is cut at the size limit
-    or dropped, and a dropped body would silently mean "use the default card".
+    """A chunked body is rejected: depending on the WSGI server it can be dropped, and an
+    empty body would silently mean "use the default card" instead of the requested one.
     """
     if "Transfer-Encoding" in request.headers:
-        raise LengthRequired()
-    return request.get_data()  # MAX_CONTENT_LENGTH turns an oversized body into 413
+        raise InvalidRequestError()
+    return request.get_data()
 
 
 def parse_payment_request(

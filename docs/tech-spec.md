@@ -141,7 +141,7 @@ interface CreatePaymentRequest {
 }
 ```
 
-An empty body, `{}` and `"payment_method_id": null` all mean "use the default method". Any other field (for example `amount`, see FR-8), a body that is not a JSON object, or malformed JSON is `400 invalid_request`. Validation order: the token (401, including a valid token for an unknown user), then the body size (411 for a chunked body without a length, 413 over 16 KB), then `Idempotency-Key` and body (400), then the cart and business rules. Chunked bodies are rejected because, depending on the WSGI server, they can be cut or dropped, and a dropped body would mean "use the default card".
+An empty body, `{}` and `"payment_method_id": null` all mean "use the default method". Any other field (for example `amount`, see FR-8), a body that is not a JSON object, or malformed JSON is `400 invalid_request`. Validation order: the token (401, including a valid token for an unknown user), then `Idempotency-Key` and body (400), then the cart and business rules. A chunked body (`Transfer-Encoding`) is `400 invalid_request`: depending on the WSGI server it can be dropped, and a dropped body would mean "use the default card".
 
 ### Response
 
@@ -187,8 +187,6 @@ A replayed response has the header `Idempotent-Replayed: true`.
 | 502 | `Payment` failed, `provider_error` | Provider definitely rejected the request (no charge) |
 
 A replay returns the status code that matches the payment's **current** state. For example, a `202` becomes `201` once the payment is reconciled.
-
-Errors outside the payment rules use the same `ErrorResponse` shape. Their `code` is the HTTP status name in snake case: `not_found` (404, unknown route), `method_not_allowed` (405, with an `Allow` header), `length_required` (411), `request_entity_too_large` (413). Any other framework error follows the same rule. An unexpected error is `internal_error` (500) and never includes internal details.
 
 ---
 

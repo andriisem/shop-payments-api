@@ -1,6 +1,5 @@
 from flask import Flask
 from sqlalchemy import create_engine
-from werkzeug.exceptions import HTTPException
 
 from app.auth import Authenticator, TokenVerifier
 from app.config import Config
@@ -8,8 +7,6 @@ from app.db import create_session_factory
 from app.payments.errors import (
     DomainError,
     handle_domain_error,
-    handle_http_error,
-    handle_unexpected_error,
 )
 from app.payments.provider import MockPaymentProvider, PaymentProvider
 from app.payments.routes import payments
@@ -34,7 +31,6 @@ def create_app(
     )
 
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = config.max_body_bytes
     session_factory = create_session_factory(engine)
     verifier = TokenVerifier(config.jwt_secret, config.jwt_issuer, config.jwt_audience)
     app.extensions["engine"] = engine
@@ -46,7 +42,5 @@ def create_app(
     )
     app.register_blueprint(payments)
     app.register_error_handler(DomainError, handle_domain_error)
-    app.register_error_handler(HTTPException, handle_http_error)
-    app.register_error_handler(Exception, handle_unexpected_error)
 
     return app

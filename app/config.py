@@ -7,7 +7,6 @@ DEFAULT_DATABASE_URL = "postgresql+psycopg://shop:shop@localhost:5434/shop_payme
 @dataclass(frozen=True)
 class Config:
     database_url: str = DEFAULT_DATABASE_URL
-    max_body_bytes: int = 16 * 1024  # the body holds one optional UUID
     application_name: str = "shop-payments-api"  # names our connections in pg_stat_activity
     # NFR-9: no default secret, so the app cannot start with a guessable one.
     jwt_secret: str = field(default="", repr=False)
