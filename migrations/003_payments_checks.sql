@@ -1,4 +1,4 @@
--- Database backstops for rules the service also enforces. See docs/tech-spec.md §7.1.
+-- Database backstops for rules the service also enforces (NFR-4, FR-12).
 
 ALTER TABLE payments
     -- NFR-4: only fixed codes are stored, never raw provider text.

@@ -1,4 +1,4 @@
--- Payments for carts. See docs/tech-spec.md §7.1.
+-- Payments for carts. See docs/tech-spec.md, "payments table".
 
 CREATE TABLE payments (
     id                  UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
