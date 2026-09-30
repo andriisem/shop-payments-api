@@ -156,9 +156,15 @@ interface Payment {
 }
 
 interface ErrorResponse {
-  error: { code: string; message: string };
+  error: {
+    code: string;
+    message: string;
+    payment_id?: string; // only for payment_in_progress: the live payment blocking the cart
+  };
 }
 ```
+
+`payment_id` in a `payment_in_progress` error lets any client of the same user (for example another device, which does not have the original key) see which payment blocks the cart. It never refers to another user's payment, because the cart lookup is already scoped by `user_id` (NFR-5).
 
 A replayed response has the header `Idempotent-Replayed: true`.
 
@@ -290,7 +296,7 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 | AC-11 | **Given** AC-10 **When** the user retries with a new key and a valid card **Then** 201 `succeeded` | FR-12 |
 | AC-12 | **Given** an `error` token **Then** 502, `failed`, `provider_error`, and the cart stays `active` | FR-12 |
 | AC-13 | **Given** a `timeout` token **Then** 202, the payment stays `pending`, and the cart stays `active` | FR-13 |
-| AC-14 | **Given** AC-13 **When** a request with a **new** key arrives for the same cart **Then** 409 `payment_in_progress`, and the provider is not called | FR-6,13 |
+| AC-14 | **Given** AC-13 **When** a request with a **new** key arrives for the same cart **Then** 409 `payment_in_progress` with `error.payment_id` equal to AC-13's payment id, and the provider is not called | FR-6,13 |
 | AC-15 | **Given** a payment that is already `succeeded` **When** the service tries to mark it `failed` **Then** no row is updated | FR-14 |
 | AC-16 | **Given** any response or log line **Then** it does not contain `provider_token` | NFR-4 |
 | AC-17 | **Given** a fake provider that inspects the DB from a separate connection inside `charge()` **When** a payment is made **Then** the payment row is visible as `pending`, `SELECT … FROM carts WHERE id = :cart_id FOR UPDATE NOWAIT` succeeds, and the request's connection is not `idle in transaction` (`pg_stat_activity`) | FR-9, NFR-3 |
@@ -302,7 +308,7 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 
 | ID | Case | Handling |
 |---|---|---|
-| EC-1 | Parallel requests, different keys, same cart | `FOR UPDATE` on the cart serializes them. The second sees the live payment → 409. The partial unique index is the backstop. One provider call |
+| EC-1 | Parallel requests, different keys, same cart | `FOR UPDATE` on the cart serializes them. The second sees the live payment → 409 `payment_in_progress` with its `payment_id`. The partial unique index is the backstop: on a `uq_payments_cart_live` violation, roll back, re-read the live payment and return the same 409. One provider call |
 | EC-2 | Parallel requests, same key | Both miss the first key lookup and queue on the cart's `FOR UPDATE`. After acquiring the lock, TX1 **re-checks the key** before the live-payment check, so the second sees the first's payment and replays it (202 while the first is still in flight), not 409. `uq_payments_user_idempotency_key` is the backstop: on a violation, roll back, re-read and replay |
 | EC-3 | Crash after the provider charge, before TX2 | The payment stays `pending` (it was committed in TX1). The cart stays blocked. Reconciliation by `payment.id` resolves it. Nothing is lost and there is no double charge |
 | EC-4 | Provider timeout | Same as EC-3: `pending` + 202, never `failed` |
