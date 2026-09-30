@@ -36,6 +36,10 @@ select = [
     "PT",      # pytest style
 ]
 
+[tool.ruff.lint.isort]
+# The format hook runs ruff on single files; name first-party packages so it sorts the same.
+known-first-party = ["app", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
     "S101",              # assert is how pytest works
