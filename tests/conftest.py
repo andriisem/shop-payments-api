@@ -1,6 +1,7 @@
 import os
 import re
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from flask import Flask
@@ -9,7 +10,6 @@ from sqlalchemy import Engine, create_engine, make_url, text
 
 from app import create_app
 from app.config import Config
-from app.migrations import apply_migrations
 from tests.factories import CartFixture, create_cart_fixture
 from tests.fakes import RecordingProvider
 from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
@@ -27,6 +27,8 @@ def make_test_config() -> Config:
         jwt_audience=JWT_AUDIENCE,
     )
 
+
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 ALL_TABLES = "users, products, carts, cart_items, user_payment_methods, payments"
 
@@ -48,7 +50,9 @@ def _recreate_database(url: str) -> None:
 def engine() -> Iterator[Engine]:
     _recreate_database(TEST_DATABASE_URL)
     engine = create_engine(TEST_DATABASE_URL)
-    apply_migrations(engine)
+    with engine.begin() as conn:
+        for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            conn.exec_driver_sql(migration.read_text())
     yield engine
     engine.dispose()
 

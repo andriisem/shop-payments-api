@@ -402,6 +402,7 @@ docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
 ```
 
+- **Migrations** are plain SQL files, applied in name order. docker compose mounts `migrations/` as Postgres's `/docker-entrypoint-initdb.d`, so a new database gets the schema on first start; the tests apply the same files to their own database. There is no migration tool (KISS).
 - Routes contain no business logic. The service raises domain errors, and a single error handler maps them to the status codes.
 - **SQLAlchemy autobegin vs NFR-3:** any query after the TX1 commit silently opens a new transaction, including a lazy refresh of an expired attribute such as `payment.id` (`expire_on_commit=True` is the default). Copy the values the provider call needs into locals before committing, and make sure the session has no open transaction during `provider.charge()`. AC-17 checks this.
 - **Isolation level:** the engine is pinned to READ COMMITTED. The key re-check under the cart lock (EC-2) relies on each statement seeing rows that were committed while it waited for the lock; under REPEATABLE READ it would miss them and only the unique index would catch the race.

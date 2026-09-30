@@ -1,4 +1,3 @@
-import click
 from flask import Flask
 from sqlalchemy import create_engine
 from werkzeug.exceptions import HTTPException
@@ -6,7 +5,6 @@ from werkzeug.exceptions import HTTPException
 from app.auth import Authenticator, TokenVerifier
 from app.config import Config
 from app.db import create_session_factory
-from app.migrations import apply_migrations
 from app.payments.errors import (
     DomainError,
     handle_domain_error,
@@ -50,11 +48,5 @@ def create_app(
     app.register_error_handler(DomainError, handle_domain_error)
     app.register_error_handler(HTTPException, handle_http_error)
     app.register_error_handler(Exception, handle_unexpected_error)
-
-    @app.cli.command("migrate")
-    def migrate() -> None:
-        """Apply pending SQL migrations."""
-        applied = apply_migrations(engine)
-        click.echo("\n".join(applied) if applied else "Nothing to apply.")
 
     return app

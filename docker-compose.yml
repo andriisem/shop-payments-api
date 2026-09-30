@@ -5,6 +5,9 @@ services:
       POSTGRES_USER: shop
       POSTGRES_PASSWORD: shop
       POSTGRES_DB: shop_payments
+    volumes:
+      # Postgres runs these files in name order when it creates a new, empty database.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
     ports:
       # 5434 avoids clashing with other local Postgres instances; override with DB_PORT.
       - "127.0.0.1:${DB_PORT:-5434}:5432"
