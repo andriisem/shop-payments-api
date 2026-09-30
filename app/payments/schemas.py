@@ -7,16 +7,11 @@ from flask import Request
 
 from app.models import FailureCode, PaymentStatus
 from app.payments.domain import PaymentRequest, PaymentResult, PaymentView
-from app.payments.errors import (
-    DomainError,
-    InvalidRequestError,
-    MissingIdempotencyKeyError,
-)
+from app.payments.errors import InvalidRequestError, MissingIdempotencyKeyError
+from app.validation import parse_canonical_uuid
 
 # FR-2: 1-255 printable ASCII characters.
 IDEMPOTENCY_KEY = re.compile(r"[\x20-\x7e]{1,255}")
-# EC-7: only the canonical 8-4-4-4-12 form; uuid.UUID() alone also accepts urn:, braces, etc.
-CANONICAL_UUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 # FR-8: the client never sends the amount, so any field but these is rejected.
 ALLOWED_FIELDS = {"payment_method_id"}
 
@@ -31,10 +26,10 @@ def parse_payment_request(request: Request, cart_id: str, user_id: UUID) -> Paym
     body = _parse_body(_read_body(request))
     payment_method_id = body.get("payment_method_id")
     if payment_method_id is not None:
-        payment_method_id = _parse_uuid(payment_method_id, InvalidRequestError)
+        payment_method_id = _parse_uuid(payment_method_id)
     return PaymentRequest(
         user_id=user_id,
-        cart_id=_parse_uuid(cart_id, InvalidRequestError),
+        cart_id=_parse_uuid(cart_id),
         idempotency_key=idempotency_key,
         payment_method_id=payment_method_id,
     )
@@ -49,10 +44,11 @@ def _read_body(request: Request) -> bytes:
     return request.get_data()
 
 
-def _parse_uuid(value: object, error: type[DomainError]) -> UUID:
-    if not isinstance(value, str) or not CANONICAL_UUID.fullmatch(value):
-        raise error()
-    return UUID(value)
+def _parse_uuid(value: object) -> UUID:
+    parsed = parse_canonical_uuid(value)
+    if parsed is None:
+        raise InvalidRequestError()
+    return parsed
 
 
 def _parse_body(raw_body: bytes) -> dict[str, Any]:

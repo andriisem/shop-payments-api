@@ -382,12 +382,14 @@ app/
   config.py              # DATABASE_URL, JWT_SECRET/ISSUER/AUDIENCE
   db.py                  # engine (isolation level, hidden SQL parameters), session factory
   models.py              # ORM mappings + CartStatus, PaymentStatus enums
+  errors.py              # DomainError base (code + HTTP status), 401 error, the one error handler
+  validation.py          # input checks shared by auth and payments: canonical UUIDs (EC-7)
   payments/
     routes.py            # Blueprint: parse/validate → service → serialize
     service.py           # PaymentService.pay_cart(): the payment flow
     domain.py            # value objects: PaymentRequest, PaymentView, ChargeAttempt, outcomes
     money.py             # money rules: chargeable amount, supported currency, minor units
-    errors.py            # Domain errors: code + HTTP status, one error handler
+    errors.py            # the payment endpoint's domain errors
     schemas.py           # Request validation, Payment serializer
 migrations/
   001_base_schema.sql    # provided base schema

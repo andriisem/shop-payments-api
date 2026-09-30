@@ -5,8 +5,8 @@ from flask import Flask
 from app.auth import Authenticator, TokenVerifier
 from app.config import Config
 from app.db import create_db_engine, create_session_factory
+from app.errors import DomainError, handle_domain_error
 from app.external import MockPaymentProvider, MockTotalService, PaymentProvider, TotalService
-from app.payments.errors import DomainError, handle_domain_error
 from app.payments.routes import payments
 from app.payments.service import PaymentService
 

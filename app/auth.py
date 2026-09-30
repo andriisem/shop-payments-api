@@ -8,9 +8,9 @@ import jwt
 from flask import current_app, g, request
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.errors import UnauthenticatedError
 from app.models import User
-from app.payments.errors import UnauthenticatedError
-from app.payments.schemas import CANONICAL_UUID
+from app.validation import parse_canonical_uuid
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +62,10 @@ class TokenVerifier:
             raise TokenError("exp and iat must be numbers")
         if claims["exp"] - claims["iat"] > MAX_TOKEN_LIFETIME_SECONDS:
             raise TokenError("token lifetime is longer than allowed")
-        subject = claims["sub"]
-        if not isinstance(subject, str) or not CANONICAL_UUID.fullmatch(subject):
+        user_id = parse_canonical_uuid(claims["sub"])
+        if user_id is None:
             raise TokenError("sub is not a canonical UUID")
-        return UUID(subject)
+        return user_id
 
 
 class Authenticator:
