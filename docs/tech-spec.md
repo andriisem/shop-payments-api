@@ -35,7 +35,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 |---|---|---|
 | A-1 | The caller's identity comes from an `X-User-Id` header, set by a trusted gateway. | No auth system exists. The header is spoofable, so it is only safe behind a gateway. |
 | A-2 | The endpoint calls the provider **synchronously**. If the outcome is unknown (timeout), the response is `202` and the client polls by repeating the request with the same idempotency key. | The mock needs no webhooks, and the same design still works with a real provider. |
-| A-3 | The total-calculation service is an injected interface. The default implementation is `sum(quantity * unit_price)` over the cart items. | The task says this service exists. |
+| A-3 | The total-calculation service is an injected interface. The default implementation is `sum(quantity * unit_price)` over the cart items. It runs **inside TX1**, on the same session, while the cart is locked, so the amount matches the locked items. It MUST be in-process DB work. A remote total service would be network I/O under a row lock (NFR-3) and would need a different design. | The task says this service exists. |
 | A-4 | A cart has one currency. A cart with mixed currencies is rejected. | The base schema stores currency per product only. |
 | A-5 | When the request has no `payment_method_id`, the user's default method is used. If there are several defaults, the most recently created one wins. | The base schema does not enforce a single default. |
 | A-6 | Stock is not checked or decremented. | That is order fulfilment (see Out of Scope). |
@@ -50,7 +50,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 | FR-1 | The system MUST expose `POST /carts/{cart_id}/payments` to charge the cart. |
 | FR-2 | The request MUST include an `Idempotency-Key` header (1–255 printable ASCII chars). The key is scoped per user. |
 | FR-3 | A repeat request with the same key and the same request body MUST return the **current** state of the original payment, with the status code for that state, and MUST NOT call the provider again. |
-| FR-4 | A repeat request with the same key but a **different** request body (cart or payment method) MUST be rejected with `422 idempotency_key_reused`. |
+| FR-4 | A repeat request with the same key but a **different** request (cart or payment method) MUST be rejected with `422 idempotency_key_reused`. The comparison uses the request **as sent**, not the resolved payment method, so a retry stays a replay even if the user's default card changed in between. |
 | FR-5 | The cart MUST exist and belong to the caller. Otherwise → `404`. |
 | FR-6 | The cart MUST be `active`, MUST have at least one item, and MUST NOT already have a live (`pending`/`succeeded`) payment. |
 | FR-7 | The payment method MUST belong to the caller (see A-5 for the default). |
@@ -88,7 +88,9 @@ flowchart TD
     B -- yes, same body --> R[Replay current state<br/>201 / 202 / 402 / 502]
     B -- yes, other body --> R2[422 idempotency_key_reused]
     B -- no --> C[TX1: SELECT cart FOR UPDATE]
-    C --> D{owned, active, has items,<br/>no live payment?}
+    C --> C2{Payment with this<br/>user + key now?}
+    C2 -- yes --> R
+    C2 -- no --> D{owned, active, has items,<br/>no live payment?}
     D -- no --> E[404 / 409 / 422]
     D -- yes --> F[Resolve payment method<br/>calculate total]
     F --> G[INSERT payment pending<br/>COMMIT TX1]
@@ -223,7 +225,7 @@ CREATE INDEX idx_payments_pending_created_at
 |---|---|
 | `user_id` | Scopes the idempotency key per user; avoids a join on every access check |
 | `amount`, `currency` | Snapshot: what was actually charged, even if the cart or prices change later |
-| `request_fingerprint` | SHA-256 of `cart_id` + resolved `payment_method_id`; detects key reuse with a different body (FR-4) |
+| `request_fingerprint` | SHA-256 of `cart_id` + `payment_method_id` **as sent** (empty when omitted); detects key reuse with a different request (FR-4). The resolved method is stored in `payment_method_id` |
 | `provider_payment_id` | The provider's charge id, for refunds and reconciliation; unique |
 | `failure_code` | A fixed code, never raw provider text (NFR-4) |
 
@@ -293,13 +295,15 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 | AC-16 | **Given** any response or log line **Then** it does not contain `provider_token` | NFR-4 |
 | AC-17 | **Given** a fake provider that inspects the DB from a separate connection inside `charge()` **When** a payment is made **Then** the payment row is visible as `pending`, `SELECT … FROM carts WHERE id = :cart_id FOR UPDATE NOWAIT` succeeds, and the request's connection is not `idle in transaction` (`pg_stat_activity`) | FR-9, NFR-3 |
 | AC-18 | **Given** a provider that returns success **When** TX2 raises a DB error **Then** 202, the payment stays `pending`, and the error is logged with `payment_id` | FR-13, EC-10 |
+| AC-19 | **Given** AC-1 sent without `payment_method_id` **When** the user changes their default card and resends the same key and body **Then** 201 replay of the original payment, not 422 | FR-3,4 |
+| AC-20 | **Given** two parallel requests with the same key for one cart **Then** both return the same payment id, one provider call, and neither returns 409 | FR-3, EC-2 |
 
 ## 9. Edge Cases
 
 | ID | Case | Handling |
 |---|---|---|
 | EC-1 | Parallel requests, different keys, same cart | `FOR UPDATE` on the cart serializes them. The second sees the live payment → 409. The partial unique index is the backstop. One provider call |
-| EC-2 | Parallel requests, same key | The second hits `uq_payments_user_idempotency_key`, rolls back, re-reads and replays (202 while the first is still in flight) |
+| EC-2 | Parallel requests, same key | Both miss the first key lookup and queue on the cart's `FOR UPDATE`. After acquiring the lock, TX1 **re-checks the key** before the live-payment check, so the second sees the first's payment and replays it (202 while the first is still in flight), not 409. `uq_payments_user_idempotency_key` is the backstop: on a violation, roll back, re-read and replay |
 | EC-3 | Crash after the provider charge, before TX2 | The payment stays `pending` (it was committed in TX1). The cart stays blocked. Reconciliation by `payment.id` resolves it. Nothing is lost and there is no double charge |
 | EC-4 | Provider timeout | Same as EC-3: `pending` + 202, never `failed` |
 | EC-5 | The cart becomes `abandoned` / `checked_out` between TX1 and TX2 | This is prevented by FR-15. TX2 still locks the cart and only moves `active → checked_out`. If the cart is not `active`, it logs an error for manual review and does not overwrite it |
@@ -357,8 +361,8 @@ migrations/
   002_payments.sql       # payments table
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
-  test_create_payment.py # AC-1 … AC-18
-  test_concurrency.py    # EC-1, EC-2 (threads + real Postgres)
+  test_create_payment.py # AC-1 … AC-19
+  test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
 docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
 ```
