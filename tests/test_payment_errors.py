@@ -226,7 +226,7 @@ def test_wrong_method_is_rejected_as_json(client: FlaskClient, alice: CartFixtur
 
     assert response.status_code == 405
     assert response.get_json()["error"]["code"] == "method_not_allowed"
-    assert response.headers["Allow"] == "OPTIONS, POST"
+    assert set(response.headers["Allow"].split(", ")) == {"OPTIONS", "POST"}
 
 
 def test_unknown_route_is_rejected_as_json(client: FlaskClient) -> None:
