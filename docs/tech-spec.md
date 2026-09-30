@@ -140,6 +140,8 @@ interface CreatePaymentRequest {
 }
 ```
 
+An empty body, `{}` and `"payment_method_id": null` all mean "use the default method". Any other field (for example `amount`, see FR-8), a body that is not a JSON object, or malformed JSON is `400 invalid_request`. Validation order: `X-User-Id` (401, including a well-formed but unknown user), then the body size (411 for a chunked body without a length, 413 over 16 KB), then `Idempotency-Key` and body (400), then the cart and business rules. Chunked bodies are rejected because, depending on the WSGI server, they can be cut or dropped, and a dropped body would mean "use the default card".
+
 ### Response
 
 ```ts
@@ -184,6 +186,8 @@ A replayed response has the header `Idempotent-Replayed: true`.
 | 502 | `Payment` failed, `provider_error` | Provider definitely rejected the request (no charge) |
 
 A replay returns the status code that matches the payment's **current** state. For example, a `202` becomes `201` once the payment is reconciled.
+
+Errors outside the payment rules use the same `ErrorResponse` shape. Their `code` is the HTTP status name in snake case: `not_found` (404, unknown route), `method_not_allowed` (405, with an `Allow` header), `length_required` (411), `request_entity_too_large` (413). Any other framework error follows the same rule. An unexpected error is `internal_error` (500) and never includes internal details.
 
 ---
 
@@ -328,7 +332,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | EC-4 | Provider timeout | Same as EC-3: `pending` + 202, never `failed` |
 | EC-5 | The cart becomes `abandoned` / `checked_out` between TX1 and TX2 | This is prevented by FR-15. TX2 still locks the cart and only moves `active → checked_out`. If the cart is not `active`, it logs an error for manual review and does not overwrite it |
 | EC-6 | Several `is_default = true` methods | The most recently created one wins (A-5) |
-| EC-7 | Invalid UUID in path or body | 400 `invalid_request` |
+| EC-7 | Invalid UUID in path or body | 400 `invalid_request`. Only the canonical `8-4-4-4-12` hex form is valid (no `urn:uuid:`, braces or missing dashes); a malformed `X-User-Id` is 401 |
 | EC-8 | Cart items in different currencies | 422 `mixed_currencies` |
 | EC-9 | Total is 0 | 422 `invalid_amount` (the DB CHECK is the backstop) |
 | EC-10 | TX2 fails (DB error, lost connection) after the provider returned a result | TX2 rolls back, so the payment stays `pending`. The response reflects the DB state: 202, never 500 and never `failed`. Log an error with `payment_id` and the provider result for reconciliation. A same-key retry replays 202 until reconciled (OS-5) |
@@ -383,7 +387,8 @@ migrations/
   003_payments_checks.sql # failure_code and succeeded-state CHECKs
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
-  test_create_payment.py # AC-1 … AC-19
+  test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, EC-5
+  test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7…EC-9, 401
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
 docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
