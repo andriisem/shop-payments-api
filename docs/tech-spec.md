@@ -73,7 +73,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 | NFR-3 | **No locks across I/O:** no DB transaction or row lock is held during the provider call. |
 | NFR-4 | **Security:** `provider_token` MUST NOT appear in responses, logs or error messages. Only `last_four` may be shown. Raw provider error text is not stored; it is mapped to a fixed `failure_code`. |
 | NFR-5 | **Access control:** every lookup filters by `user_id`. Another user's carts and payment methods return `404`, never `403`, so their existence is not revealed. |
-| NFR-6 | **Timeouts:** the provider call has an explicit timeout (config, default 10 s). |
+| NFR-6 | **Timeouts:** a real provider client MUST call the provider with an explicit timeout (e.g. 10 s) and raise `ProviderTimeoutError` when it expires. The mock makes no network call, so it has no timeout setting. |
 | NFR-7 | **Observability:** every log line for a payment carries `payment_id`, `cart_id` and `user_id`. |
 | NFR-8 | **Testability:** the provider, the total service and the clock are injected via `create_app()`. Tests run against a real PostgreSQL, because partial indexes and `FOR UPDATE` cannot be tested on SQLite. |
 | NFR-9 | **Authentication:** every request MUST carry `Authorization: Bearer <JWT>`. The service verifies the signature (HS256 with a secret of at least 32 bytes from config; only that algorithm is accepted, never `none`), `exp` (required, 30 s leeway for clock skew), `iat` (required, not in the future; a token may live at most 15 minutes, `exp − iat ≤ 900 s`), `nbf` when present, `iss` and `aud` (`aud` may be a list that contains this service, per RFC 7519). `exp` and `iat` MUST be numbers. The JWT header `typ` MUST be `at+jwt` or `application/at+jwt`, case-insensitive (RFC 9068), so ID tokens and refresh tokens are rejected even if their other claims match. `sub` is the user id as a canonical UUID, and the user MUST exist. Any failure is `401 unauthenticated` with `WWW-Authenticate: Bearer`; the reason is logged, never returned. Authentication runs as middleware before the route, so the route and the service only see a verified `user_id`. `OPTIONS` is answered without a token (200 with `Allow`, no data), because CORS preflights never carry credentials. |
@@ -375,7 +375,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 app/
   __init__.py            # create_app(provider=..., totals=...) factory
   auth.py                # JWT verification + before_request middleware (NFR-9)
-  config.py              # DATABASE_URL, PROVIDER_TIMEOUT_SECONDS, JWT_SECRET/ISSUER/AUDIENCE
+  config.py              # DATABASE_URL, JWT_SECRET/ISSUER/AUDIENCE
   db.py                  # engine, session
   models.py              # User, Cart, CartItem, UserPaymentMethod, Payment
   payments/
