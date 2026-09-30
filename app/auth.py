@@ -1,7 +1,6 @@
 """NFR-9: verify the caller's access token before any payment route runs."""
 
 import logging
-import time
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -67,18 +66,6 @@ class TokenVerifier:
         if not isinstance(subject, str) or not CANONICAL_UUID.fullmatch(subject):
             raise TokenError("sub is not a canonical UUID")
         return UUID(subject)
-
-    def issue(self, user_id: UUID, lifetime_seconds: int) -> str:
-        """Sign an access token the way the identity provider would. For local testing."""
-        now = int(time.time())
-        claims = {
-            "sub": str(user_id),
-            "iss": self.issuer,
-            "aud": self.audience,
-            "iat": now,
-            "exp": now + lifetime_seconds,
-        }
-        return jwt.encode(claims, self.secret, algorithm=ALGORITHM, headers={"typ": "at+jwt"})
 
 
 class Authenticator:

@@ -1,5 +1,3 @@
-from uuid import UUID
-
 import click
 from flask import Flask
 from sqlalchemy import create_engine
@@ -58,12 +56,5 @@ def create_app(
         """Apply pending SQL migrations."""
         applied = apply_migrations(engine)
         click.echo("\n".join(applied) if applied else "Nothing to apply.")
-
-    @app.cli.command("dev-token")
-    @click.argument("user_id", type=click.UUID)
-    @click.option("--minutes", default=5, type=click.IntRange(1, 15), show_default=True)
-    def dev_token(user_id: UUID, minutes: int) -> None:
-        """Print an access token for USER_ID, signed with JWT_SECRET. For local testing."""
-        click.echo(verifier.issue(user_id, lifetime_seconds=minutes * 60))
 
     return app

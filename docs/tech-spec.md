@@ -396,6 +396,8 @@ tests/
   test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7…EC-9
   test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
+scripts/
+  dev_token.py           # local testing only: mints an access token (the identity provider's job)
 docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
 ```
