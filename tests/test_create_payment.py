@@ -6,7 +6,8 @@ from sqlalchemy import Engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.external import ChargeResult
-from app.payments.service import Failed, finalise_payment
+from app.payments.domain import Failed
+from app.payments.service import finalise_payment
 from tests.factories import CartFixture, insert_payment
 from tests.fakes import ChargeCall, RecordingProvider
 from tests.helpers import add_card, cart_payment_statuses, cart_status, pay, stored_payment

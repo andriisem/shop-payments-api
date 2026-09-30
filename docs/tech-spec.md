@@ -271,16 +271,21 @@ A cart can have many **failed** payments but at most one **live** one.
 
 ```python
 class PaymentProvider(Protocol):
-    def charge(self, *, token: str, amount_minor: int, currency: str,
-               idempotency_key: str) -> ChargeResult: ...
+    def charge(
+        self, *, token: str, amount_minor: int, currency: str, idempotency_key: str
+    ) -> ChargeResult: ...
+
 
 @dataclass(frozen=True)
 class ChargeResult:
     status: Literal["succeeded", "declined"]
     provider_payment_id: str | None = None
 
-class ProviderRejectedError(Exception): ...   # definite: no charge happened
-class ProviderTimeoutError(Exception): ...    # unknown: charge may have happened
+
+class ProviderRejectedError(Exception): ...  # definite: no charge happened
+
+
+class ProviderTimeoutError(Exception): ...  # unknown: charge may have happened
 ```
 
 | Token contains | Mock behaviour | Payment result | HTTP |
@@ -376,10 +381,12 @@ app/
   external.py            # systems outside the payment part: PaymentProvider + mock, TotalService + fixed stand-in
   config.py              # DATABASE_URL, JWT_SECRET/ISSUER/AUDIENCE
   db.py                  # engine, session
-  models.py              # User, Cart, CartItem, UserPaymentMethod, Payment
+  models.py              # ORM mappings + CartStatus, PaymentStatus enums
   payments/
     routes.py            # Blueprint: parse/validate → service → serialize
     service.py           # PaymentService.pay_cart(): the payment flow
+    domain.py            # value objects: PaymentRequest, PaymentView, ChargeAttempt, outcomes
+    money.py             # money rules: chargeable amount, supported currency, minor units
     errors.py            # Domain errors: code + HTTP status, one error handler
     schemas.py           # Request validation, Payment serializer
 migrations/

@@ -3,9 +3,33 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import DateTime, ForeignKey, Numeric, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+class CartStatus(StrEnum):
+    """The CHECK values of carts.status in the base schema."""
+
+    ACTIVE = "active"
+    CHECKED_OUT = "checked_out"
+    ABANDONED = "abandoned"
+
+
+class PaymentStatus(StrEnum):
+    """The CHECK values of payments.status (migrations/002_payments.sql)."""
+
+    PENDING = "pending"  # money may be moving: blocks the cart
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"  # the provider confirmed there was no charge
+
+
+class FailureCode(StrEnum):
+    """The CHECK values of payments.failure_code (migrations/003_payments_checks.sql)."""
+
+    CARD_DECLINED = "card_declined"  # the provider declined the card: 402
+    PROVIDER_ERROR = "provider_error"  # the provider rejected the request: 502
 
 
 class Base(DeclarativeBase):
@@ -66,7 +90,9 @@ class Payment(Base):
     payment_method_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("user_payment_methods.id"))
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     currency: Mapped[str]
-    status: Mapped[str] = mapped_column(default="pending")
+    # Mapped as str on purpose: PaymentStatus is a StrEnum, so its members bind as their
+    # values ('pending'), and rows read back compare equal to them. Pinned by a test.
+    status: Mapped[str] = mapped_column(default=PaymentStatus.PENDING)
     idempotency_key: Mapped[str]
     request_fingerprint: Mapped[str]
     provider_payment_id: Mapped[str | None]

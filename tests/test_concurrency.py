@@ -22,8 +22,9 @@ from werkzeug.test import TestResponse
 
 from app.config import Config
 from app.external import ChargeResult
+from app.payments.domain import PaymentRequest
 from app.payments.errors import PaymentInProgressError
-from app.payments.service import PaymentRequest, PaymentService
+from app.payments.service import PaymentService
 from tests.factories import (
     CartFixture,
     fetch_value,

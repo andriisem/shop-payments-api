@@ -5,12 +5,13 @@ from uuid import UUID
 
 from flask import Request
 
+from app.models import FailureCode, PaymentStatus
+from app.payments.domain import PaymentRequest, PaymentResult, PaymentView
 from app.payments.errors import (
     DomainError,
     InvalidRequestError,
     MissingIdempotencyKeyError,
 )
-from app.payments.service import PaymentRequest, PaymentResult, PaymentView
 
 # FR-2: 1-255 printable ASCII characters.
 IDEMPOTENCY_KEY = re.compile(r"[\x20-\x7e]{1,255}")
@@ -89,8 +90,8 @@ def payment_response(result: PaymentResult) -> tuple[dict[str, Any], int, dict[s
 
 def http_status(payment: PaymentView) -> int:
     """The status code follows the payment's current state."""
-    if payment.status == "succeeded":
+    if payment.status == PaymentStatus.SUCCEEDED:
         return 201
-    if payment.status == "pending":
+    if payment.status == PaymentStatus.PENDING:
         return 202
-    return 402 if payment.failure_code == "card_declined" else 502
+    return 402 if payment.failure_code == FailureCode.CARD_DECLINED else 502

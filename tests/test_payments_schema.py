@@ -5,12 +5,14 @@ The constraint names are asserted because the service maps IntegrityError by con
 """
 
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, literal, select, text
 from sqlalchemy.exc import IntegrityError
 
+from app.models import CartStatus, FailureCode, PaymentStatus
 from tests.factories import CartFixture, insert_payment
 
 
@@ -135,3 +137,13 @@ def test_fr16_payment_method_used_by_a_payment_cannot_be_deleted(
         )
 
     assert _violated_constraint(error) == "payments_payment_method_id_fkey"
+
+
+@pytest.mark.parametrize("value", [*PaymentStatus, *CartStatus, *FailureCode])
+def test_status_enums_are_stored_as_their_values(engine: Engine, value: StrEnum) -> None:
+    # Guarded UPDATEs and the partial indexes match on 'pending', not on 'PENDING'. If a
+    # driver ever bound an enum by its member name, every status change would silently miss.
+    with engine.connect() as conn:
+        stored = conn.execute(select(literal(value))).scalar_one()
+
+    assert stored == value.value

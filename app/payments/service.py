@@ -6,10 +6,6 @@ can lazy-load (and silently open a transaction) after its session is closed.
 
 import hashlib
 import logging
-import re
-from dataclasses import dataclass, field
-from datetime import datetime
-from decimal import Decimal
 from uuid import UUID
 
 import psycopg
@@ -24,7 +20,26 @@ from app.external import (
     ProviderTimeoutError,
     TotalService,
 )
-from app.models import Cart, CartItem, Payment, UserPaymentMethod
+from app.models import (
+    Cart,
+    CartItem,
+    CartStatus,
+    FailureCode,
+    Payment,
+    PaymentStatus,
+    UserPaymentMethod,
+)
+from app.payments.domain import (
+    ChargeAttempt,
+    Failed,
+    Outcome,
+    PaymentRequest,
+    PaymentResult,
+    PaymentView,
+    StoredPayment,
+    Succeeded,
+    Unknown,
+)
 from app.payments.errors import (
     CartEmptyError,
     CartNotActiveError,
@@ -36,132 +51,20 @@ from app.payments.errors import (
     PaymentMethodNotFoundError,
     UnsupportedCurrencyError,
 )
+from app.payments.money import (
+    is_chargeable_amount,
+    is_supported_currency,
+    to_cents,
+    to_minor_units,
+)
 
 logger = logging.getLogger(__name__)
 
-CENT = Decimal("0.01")
-MAX_AMOUNT = Decimal("1E10")  # NUMERIC(12,2) holds at most 9,999,999,999.99
-CURRENCY_CODE = re.compile(r"[A-Z]{3}")
-# NFR-1: minor units assume 2 decimals. These ISO 4217 currencies have 0 or 3, so 70 JPY
-# would be charged as 7000 (100x) and 70 KWD as 7000 (10x too little).
-NOT_TWO_DECIMAL_CURRENCIES = frozenset(
-    [
-        "BIF",
-        "CLP",
-        "DJF",
-        "GNF",
-        "ISK",
-        "JPY",
-        "KMF",
-        "KRW",
-        "PYG",
-        "RWF",
-        "UGX",
-        "UYI",
-        "VND",
-        "VUV",
-        "XAF",
-        "XOF",
-        "XPF",
-        "BHD",
-        "IQD",
-        "JOD",
-        "KWD",
-        "LYD",
-        "OMR",
-        "TND",
-    ]
-)
-LIVE_STATUSES = ("pending", "succeeded")
+LIVE_STATUSES = (PaymentStatus.PENDING, PaymentStatus.SUCCEEDED)
 
-
-@dataclass(frozen=True)
-class PaymentRequest:
-    user_id: UUID
-    cart_id: UUID
-    idempotency_key: str
-    payment_method_id: UUID | None
-
-
-@dataclass(frozen=True)
-class PaymentView:
-    id: UUID
-    cart_id: UUID
-    payment_method_id: UUID
-    amount: Decimal
-    currency: str
-    status: str
-    provider_payment_id: str | None
-    failure_code: str | None
-    created_at: datetime
-    updated_at: datetime
-
-    @classmethod
-    def from_model(cls, payment: Payment) -> "PaymentView":
-        return cls(
-            id=payment.id,
-            cart_id=payment.cart_id,
-            payment_method_id=payment.payment_method_id,
-            amount=payment.amount,
-            currency=payment.currency,
-            status=payment.status,
-            provider_payment_id=payment.provider_payment_id,
-            failure_code=payment.failure_code,
-            created_at=payment.created_at,
-            updated_at=payment.updated_at,
-        )
-
-
-@dataclass(frozen=True)
-class PaymentResult:
-    payment: PaymentView
-    replayed: bool = False  # FR-3: sent back as Idempotent-Replayed: true
-
-
-@dataclass(frozen=True)
-class StoredPayment:
-    """A payment found by its idempotency key, with the fingerprint of its request."""
-
-    payment: PaymentView
-    fingerprint: str
-
-
-@dataclass(frozen=True)
-class ChargeAttempt:
-    """Everything the provider call and TX2 need, captured before TX1 commits."""
-
-    payment: PaymentView
-    token: str = field(repr=False)  # NFR-4: never shows up in logs or tracebacks
-    amount_minor: int
-    user_id: UUID
-
-
-@dataclass(frozen=True)
-class Succeeded:
-    provider_payment_id: str
-
-
-@dataclass(frozen=True)
-class Failed:
-    """The provider confirmed that no charge happened."""
-
-    failure_code: str
-
-
-@dataclass(frozen=True)
-class Unknown:
-    """The card may or may not have been charged: the payment must stay pending (FR-13)."""
-
-
-Outcome = Succeeded | Failed | Unknown
-
-
-def to_minor_units(amount: Decimal) -> int:
-    """NFR-1: Decimal("70.00") -> 7000. Valid for 2-decimal currencies only."""
-    minor = amount * 100
-    if minor != minor.to_integral_value():
-        raise ValueError(f"Amount {amount} has more than 2 decimal places")
-    return int(minor)
+# Unique constraints from migrations/002_payments.sql, used to route races (EC-1, EC-2).
+UNIQUE_IDEMPOTENCY_KEY = "uq_payments_user_idempotency_key"
+UNIQUE_LIVE_PAYMENT_PER_CART = "uq_payments_cart_live"
 
 
 def request_fingerprint(request: PaymentRequest) -> str:
@@ -175,15 +78,28 @@ def finalise_payment(
 ) -> Payment | None:
     """FR-14: move a pending payment to its final state. Returns None if it was not pending."""
     if isinstance(outcome, Succeeded):
-        values = {"status": "succeeded", "provider_payment_id": outcome.provider_payment_id}
+        values = {
+            "status": PaymentStatus.SUCCEEDED,
+            "provider_payment_id": outcome.provider_payment_id,
+        }
     else:
-        values = {"status": "failed", "failure_code": outcome.failure_code}
+        values = {"status": PaymentStatus.FAILED, "failure_code": outcome.failure_code}
     return session.scalars(
         update(Payment)
-        .where(Payment.id == payment_id, Payment.status == "pending")
+        .where(Payment.id == payment_id, Payment.status == PaymentStatus.PENDING)
         .values(**values)
         .returning(Payment)
     ).one_or_none()
+
+
+def payment_log(attempt: ChargeAttempt) -> logging.LoggerAdapter[logging.Logger]:
+    """NFR-7: every log line about a payment carries its payment, cart and user ids."""
+    context = {
+        "payment_id": str(attempt.payment.id),
+        "cart_id": str(attempt.payment.cart_id),
+        "user_id": str(attempt.user_id),
+    }
+    return logging.LoggerAdapter(logger, context)
 
 
 class PaymentService:
@@ -211,14 +127,7 @@ class PaymentService:
             return self._replay(reserved, request)
 
         attempt = reserved
-        log = logging.LoggerAdapter(
-            logger,
-            {
-                "payment_id": str(attempt.payment.id),
-                "cart_id": str(request.cart_id),
-                "user_id": str(request.user_id),
-            },
-        )
+        log = payment_log(attempt)
         outcome = self._charge(attempt, log)
         if isinstance(outcome, Unknown):
             return PaymentResult(attempt.payment)  # still pending, as committed in TX1
@@ -258,11 +167,11 @@ class PaymentService:
             error.orig.diag.constraint_name if isinstance(error.orig, psycopg.Error) else None
         )
         with self._session_factory() as session:
-            if constraint == "uq_payments_user_idempotency_key":
+            if constraint == UNIQUE_IDEMPOTENCY_KEY:
                 stored = self._find_by_key(session, request)
                 if stored is not None:
                     return self._replay(stored, request)
-            elif constraint == "uq_payments_cart_live":
+            elif constraint == UNIQUE_LIVE_PAYMENT_PER_CART:
                 live_payment_id = self._live_payment_id(session, request)
                 if live_payment_id is not None:
                     raise PaymentInProgressError(live_payment_id)
@@ -288,7 +197,7 @@ class PaymentService:
                 cart_id=cart.id,
                 user_id=request.user_id,
                 payment_method_id=payment_method.id,
-                amount=total.amount.quantize(CENT),  # "70" and "70.00" serialize the same
+                amount=to_cents(total.amount),  # "70" and "70.00" serialize the same
                 currency=total.currency,
                 idempotency_key=request.idempotency_key,
                 request_fingerprint=request_fingerprint(request),
@@ -316,7 +225,7 @@ class PaymentService:
 
     def _check_payable(self, session: Session, cart: Cart, request: PaymentRequest) -> None:
         """FR-6: active, has items, no live payment."""
-        if cart.status != "active":
+        if cart.status != CartStatus.ACTIVE:
             raise CartNotActiveError()
         if not session.scalar(select(exists().where(CartItem.cart_id == cart.id))):
             raise CartEmptyError()
@@ -363,13 +272,9 @@ class PaymentService:
         fits NUMERIC(12,2) (EC-9), in a supported 2-decimal currency (EC-11), is charged.
         """
         total = self._total_service.get_total(cart.id)
-        amount = total.amount
-        if not (amount.is_finite() and 0 < amount < MAX_AMOUNT and amount == amount.quantize(CENT)):
+        if not is_chargeable_amount(total.amount):
             raise InvalidAmountError()
-        if (
-            not CURRENCY_CODE.fullmatch(total.currency)
-            or total.currency in NOT_TWO_DECIMAL_CURRENCIES
-        ):
+        if not is_supported_currency(total.currency):
             raise UnsupportedCurrencyError()
         return total
 
@@ -386,7 +291,7 @@ class PaymentService:
             )
         except ProviderRejectedError:
             log.warning("Provider rejected the charge")
-            return Failed("provider_error")
+            return Failed(FailureCode.PROVIDER_ERROR)
         except ProviderTimeoutError:
             log.warning("Provider timed out; payment stays pending")
             return Unknown()
@@ -395,10 +300,11 @@ class PaymentService:
             log.error("Provider call failed with %s; payment stays pending", type(error).__name__)
             return Unknown()
 
+        # result.status is the provider's own vocabulary, not our PaymentStatus.
         if result.status == "succeeded" and result.provider_payment_id:
             return Succeeded(result.provider_payment_id)
         if result.status == "declined":
-            return Failed("card_declined")
+            return Failed(FailureCode.CARD_DECLINED)
         # Anything else (a new provider status, success without an id) is not a confirmed
         # outcome, so it must not free the cart or check it out.
         log.error("Provider returned an unconfirmed result; payment stays pending")
@@ -427,8 +333,8 @@ class PaymentService:
             if isinstance(outcome, Succeeded):
                 checked_out = session.scalars(
                     update(Cart)
-                    .where(*owned_cart, Cart.status == "active")
-                    .values(status="checked_out")
+                    .where(*owned_cart, Cart.status == CartStatus.ACTIVE)
+                    .values(status=CartStatus.CHECKED_OUT)
                     .returning(Cart.id)
                 ).one_or_none()
                 if checked_out is None:
