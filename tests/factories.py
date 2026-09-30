@@ -111,3 +111,13 @@ def create_cart_fixture(engine: Engine, name: str) -> CartFixture:
         insert_cart_item(conn, cart_id, mug, 2, Decimal("12.50"))
         payment_method_id = insert_payment_method(conn, user_id)
     return CartFixture(user_id, cart_id, payment_method_id)
+
+
+def fetch_value(engine: Engine, sql: str, **params: object) -> object:
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params).scalar_one()
+
+
+def fetch_row(engine: Engine, sql: str, **params: object) -> dict[str, object]:
+    with engine.connect() as conn:
+        return dict(conn.execute(text(sql), params).mappings().one())

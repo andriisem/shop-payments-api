@@ -3,10 +3,15 @@ import re
 from collections.abc import Iterator
 
 import pytest
+from flask import Flask
+from flask.testing import FlaskClient
 from sqlalchemy import Engine, create_engine, make_url, text
 
+from app import create_app
+from app.config import Config
 from app.migrations import apply_migrations
 from tests.factories import CartFixture, create_cart_fixture
+from tests.fakes import RecordingProvider
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://shop:shop@localhost:5434/shop_payments_test"
@@ -57,3 +62,20 @@ def alice(engine: Engine) -> CartFixture:
 @pytest.fixture
 def bob(engine: Engine) -> CartFixture:
     return create_cart_fixture(engine, name="bob")
+
+
+@pytest.fixture
+def provider() -> RecordingProvider:
+    return RecordingProvider()
+
+
+@pytest.fixture
+def app(provider: RecordingProvider) -> Iterator[Flask]:
+    app = create_app(Config(database_url=TEST_DATABASE_URL), provider=provider)
+    yield app
+    app.extensions["engine"].dispose()
+
+
+@pytest.fixture
+def client(app: Flask) -> FlaskClient:
+    return app.test_client()
