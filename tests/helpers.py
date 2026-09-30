@@ -8,6 +8,7 @@ from sqlalchemy import Engine, text
 from werkzeug.test import TestResponse
 
 from tests.factories import CartFixture, fetch_row, fetch_value, insert_payment_method
+from tests.tokens import auth_headers
 
 
 def pay(
@@ -22,7 +23,7 @@ def pay(
         body["payment_method_id"] = str(payment_method_id)
     return client.post(
         f"/carts/{cart.cart_id}/payments",
-        headers={"X-User-Id": str(cart.user_id), "Idempotency-Key": key},
+        headers={**auth_headers(cart.user_id), "Idempotency-Key": key},
         json=body,
     )
 

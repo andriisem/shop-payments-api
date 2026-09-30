@@ -11,7 +11,6 @@ from app.payments.errors import (
     DomainError,
     InvalidRequestError,
     MissingIdempotencyKeyError,
-    UnauthenticatedError,
 )
 from app.payments.service import PaymentRequest, PaymentView
 
@@ -21,10 +20,6 @@ IDEMPOTENCY_KEY = re.compile(r"[\x20-\x7e]{1,255}")
 CANONICAL_UUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 # FR-8: the client never sends the amount, so any field but these is rejected.
 ALLOWED_FIELDS = {"payment_method_id"}
-
-
-def parse_user_id(headers: Headers) -> UUID:
-    return _parse_uuid(headers.get("X-User-Id"), UnauthenticatedError)
 
 
 def read_body(request: Request) -> bytes:

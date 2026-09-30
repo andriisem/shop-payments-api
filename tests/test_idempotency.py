@@ -8,6 +8,7 @@ from sqlalchemy import Engine, text
 from tests.factories import CartFixture, insert_cart, insert_payment_method
 from tests.fakes import RecordingProvider
 from tests.helpers import add_card, pay, payment_count
+from tests.tokens import auth_headers
 
 
 def test_ac2_same_key_and_body_replays_without_charging_again(
@@ -138,7 +139,7 @@ def test_fr2_nfr5_key_lookup_never_crosses_users(
     client: FlaskClient, alice: CartFixture, bob: CartFixture
 ) -> None:
     pay(client, alice, key="shared-key")
-    headers = {"X-User-Id": str(bob.user_id), "Idempotency-Key": "shared-key"}
+    headers = {**auth_headers(bob.user_id), "Idempotency-Key": "shared-key"}
 
     response = client.post(f"/carts/{uuid.uuid4()}/payments", headers=headers, json={})
 

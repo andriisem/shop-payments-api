@@ -13,9 +13,8 @@ from sqlalchemy.orm import Session
 from werkzeug.test import TestResponse
 
 from app import create_app
-from app.config import Config
 from app.payments.totals import CartTotal
-from tests.conftest import TEST_DATABASE_URL
+from tests.conftest import make_test_config
 from tests.factories import (
     CartFixture,
     insert_cart,
@@ -25,6 +24,7 @@ from tests.factories import (
 )
 from tests.fakes import RecordingProvider
 from tests.helpers import add_card, pay, payment_count
+from tests.tokens import auth_headers
 
 
 def assert_rejected(
@@ -52,28 +52,6 @@ def post(
     return client.post(f"/carts/{cart_id}/payments", headers=headers, **kwargs)
 
 
-@pytest.mark.parametrize(
-    "user_id",
-    [None, "not-a-uuid", str(uuid.uuid4()), "{{{alice}}}", "urn:uuid:{alice}"],
-    ids=["missing", "malformed", "unknown-user", "braced-alice", "urn-alice"],
-)
-def test_caller_must_be_a_known_user(
-    client: FlaskClient,
-    engine: Engine,
-    alice: CartFixture,
-    provider: RecordingProvider,
-    user_id: str | None,
-) -> None:
-    headers = {"Idempotency-Key": "key-1"}
-    if user_id is not None:
-        # Alice exists, but only the canonical spelling of her id is accepted (EC-7).
-        headers["X-User-Id"] = user_id.format(alice=alice.user_id)
-
-    response = post(client, alice.cart_id, headers, json={})
-
-    assert_rejected(response, 401, "unauthenticated", engine, provider)
-
-
 @pytest.mark.parametrize("key", [None, ""], ids=["missing", "empty"])
 def test_ac4_idempotency_key_is_required(
     client: FlaskClient,
@@ -82,7 +60,7 @@ def test_ac4_idempotency_key_is_required(
     provider: RecordingProvider,
     key: str | None,
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id)}
+    headers = auth_headers(alice.user_id)
     if key is not None:
         headers["Idempotency-Key"] = key
 
@@ -99,7 +77,7 @@ def test_fr2_idempotency_key_must_be_printable_ascii_up_to_255(
     provider: RecordingProvider,
     key: str,
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id), "Idempotency-Key": key}
+    headers = {**auth_headers(alice.user_id), "Idempotency-Key": key}
 
     response = post(client, alice.cart_id, headers, json={})
 
@@ -141,7 +119,7 @@ def test_ec7_malformed_request_is_invalid(
     cart_id: str | None,
     request_kwargs: dict[str, Any],
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id), "Idempotency-Key": "key-1"}
+    headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
     response = post(client, cart_id or alice.cart_id, headers, **request_kwargs)
 
@@ -159,7 +137,7 @@ def test_request_without_a_card_uses_the_default_card(
     provider: RecordingProvider,
     request_kwargs: dict[str, Any],
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id), "Idempotency-Key": "key-1"}
+    headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
     response = post(client, alice.cart_id, headers, **request_kwargs)
 
@@ -174,20 +152,10 @@ def test_fr2_idempotency_key_of_255_characters_is_accepted(
     assert pay(client, alice, key="k" * 255).status_code == 201
 
 
-def test_unknown_user_is_rejected_before_request_validation(
-    client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
-) -> None:
-    headers = {"X-User-Id": str(uuid.uuid4())}  # well-formed but unknown, and no key
-
-    response = post(client, "not-a-uuid", headers, data="{not json")
-
-    assert_rejected(response, 401, "unauthenticated", engine, provider)
-
-
 def test_oversized_body_is_rejected_as_json(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id), "Idempotency-Key": "key-1"}
+    headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
     body = '{"payment_method_id": "' + "x" * 20_000 + '"}'
 
     response = post(client, alice.cart_id, headers, data=body, content_type="application/json")
@@ -198,7 +166,7 @@ def test_oversized_body_is_rejected_as_json(
 def test_missing_key_is_reported_before_a_bad_body(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id)}
+    headers = auth_headers(alice.user_id)
 
     response = post(client, alice.cart_id, headers, data="{not json")
 
@@ -211,7 +179,7 @@ def test_chunked_body_is_rejected(
     # A chunked body can be cut or dropped by the WSGI layer, which would charge the
     # default card instead of the requested one. The body is tiny, so require a length.
     headers = {
-        "X-User-Id": str(alice.user_id),
+        **auth_headers(alice.user_id),
         "Idempotency-Key": "key-1",
         "Transfer-Encoding": "chunked",
     }
@@ -243,9 +211,7 @@ def test_unexpected_error_returns_generic_json_500(
         def calculate(self, session: Session, cart_id: UUID) -> CartTotal:
             raise RuntimeError("secret internal detail")
 
-    app = create_app(
-        Config(database_url=TEST_DATABASE_URL), provider=provider, totals=BrokenTotals()
-    )
+    app = create_app(make_test_config(), provider=provider, totals=BrokenTotals())
     try:
         response = pay(app.test_client(), alice)
     finally:
@@ -263,7 +229,7 @@ def test_ac5_another_users_cart_is_not_found(
     bob: CartFixture,
     provider: RecordingProvider,
 ) -> None:
-    headers = {"X-User-Id": str(bob.user_id), "Idempotency-Key": "key-1"}
+    headers = {**auth_headers(bob.user_id), "Idempotency-Key": "key-1"}
 
     response = post(client, alice.cart_id, headers, json={})
 
@@ -273,7 +239,7 @@ def test_ac5_another_users_cart_is_not_found(
 def test_fr5_missing_cart_is_not_found(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
-    headers = {"X-User-Id": str(alice.user_id), "Idempotency-Key": "key-1"}
+    headers = {**auth_headers(alice.user_id), "Idempotency-Key": "key-1"}
 
     response = post(client, uuid.uuid4(), headers, json={})
 

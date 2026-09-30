@@ -21,9 +21,15 @@ class DomainError(Exception):
     def body(self) -> dict[str, Any]:
         return {"error": {"code": self.code, "message": self.message}}
 
+    def headers(self) -> dict[str, str]:
+        return {}
+
 
 class UnauthenticatedError(DomainError):
-    code, status, message = "unauthenticated", 401, "Unknown or missing X-User-Id."
+    code, status, message = "unauthenticated", 401, "Missing or invalid access token."
+
+    def headers(self) -> dict[str, str]:
+        return {"WWW-Authenticate": 'Bearer realm="shop-payments-api"'}
 
 
 class MissingIdempotencyKeyError(DomainError):
@@ -83,8 +89,8 @@ class InvalidAmountError(DomainError):
     code, status, message = "invalid_amount", 422, "Cart total must be greater than zero."
 
 
-def handle_domain_error(error: DomainError) -> tuple[dict[str, Any], int]:
-    return error.body(), error.status
+def handle_domain_error(error: DomainError) -> tuple[dict[str, Any], int, dict[str, str]]:
+    return error.body(), error.status, error.headers()
 
 
 def handle_http_error(

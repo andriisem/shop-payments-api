@@ -16,7 +16,7 @@ from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Cart, CartItem, Payment, User, UserPaymentMethod
+from app.models import Cart, CartItem, Payment, UserPaymentMethod
 from app.payments.errors import (
     CartEmptyError,
     CartNotActiveError,
@@ -26,7 +26,6 @@ from app.payments.errors import (
     NoPaymentMethodError,
     PaymentInProgressError,
     PaymentMethodNotFoundError,
-    UnauthenticatedError,
 )
 from app.payments.provider import PaymentProvider, ProviderRejectedError, ProviderTimeoutError
 from app.payments.totals import CartTotal, CartTotalService
@@ -185,12 +184,6 @@ class PaymentService:
         if isinstance(outcome, Unknown):
             return PaymentResult(attempt.payment)  # still pending, as committed in TX1
         return PaymentResult(self._finalise(attempt, outcome, log))
-
-    def authenticate(self, user_id: UUID) -> None:
-        """401 for an unknown caller, checked before any other validation."""
-        with self._session_factory() as session:
-            if session.get(User, user_id) is None:
-                raise UnauthenticatedError()
 
     @staticmethod
     def _find_by_key(session: Session, request: PaymentRequest) -> StoredPayment | None:

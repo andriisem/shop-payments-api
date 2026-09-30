@@ -12,10 +12,21 @@ from app.config import Config
 from app.migrations import apply_migrations
 from tests.factories import CartFixture, create_cart_fixture
 from tests.fakes import RecordingProvider
+from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql+psycopg://shop:shop@localhost:5434/shop_payments_test"
 )
+
+
+def make_test_config() -> Config:
+    return Config(
+        database_url=TEST_DATABASE_URL,
+        jwt_secret=JWT_SECRET,
+        jwt_issuer=JWT_ISSUER,
+        jwt_audience=JWT_AUDIENCE,
+    )
+
 
 ALL_TABLES = "users, products, carts, cart_items, user_payment_methods, payments"
 
@@ -71,7 +82,7 @@ def provider() -> RecordingProvider:
 
 @pytest.fixture
 def app(provider: RecordingProvider) -> Iterator[Flask]:
-    app = create_app(Config(database_url=TEST_DATABASE_URL), provider=provider)
+    app = create_app(make_test_config(), provider=provider)
     yield app
     app.extensions["engine"].dispose()
 

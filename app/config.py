@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_DATABASE_URL = "postgresql+psycopg://shop:shop@localhost:5434/shop_payments"
 
@@ -10,10 +10,17 @@ class Config:
     provider_timeout_seconds: float = 10.0  # NFR-6
     max_body_bytes: int = 16 * 1024  # the body holds one optional UUID
     application_name: str = "shop-payments-api"  # names our connections in pg_stat_activity
+    # NFR-9: no default secret, so the app cannot start with a guessable one.
+    jwt_secret: str = field(default="", repr=False)
+    jwt_issuer: str = "https://id.shop.local"
+    jwt_audience: str = "shop-payments-api"
 
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
             database_url=os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
             provider_timeout_seconds=float(os.environ.get("PROVIDER_TIMEOUT_SECONDS", "10")),
+            jwt_secret=os.environ.get("JWT_SECRET", ""),
+            jwt_issuer=os.environ.get("JWT_ISSUER", cls.jwt_issuer),
+            jwt_audience=os.environ.get("JWT_AUDIENCE", cls.jwt_audience),
         )
