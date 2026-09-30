@@ -10,34 +10,59 @@ from decimal import Decimal
 from typing import Literal, Protocol
 from uuid import UUID
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.models import CartItem, Product
+
 
 @dataclass(frozen=True)
 class CartTotal:
+    """What the total service answers. External input: the caller validates it (EC-9, EC-11)."""
+
     amount: Decimal
     currency: str
 
 
 class TotalService(Protocol):
-    """The shop's existing total service (A-3). Not ours to build."""
+    """The shop's existing total service (A-3). Not ours to build.
+
+    It is called inside TX1 while the cart row is locked and TX1 holds a connection, so an
+    implementation must answer fast (a real client needs a short timeout), must not lock the
+    cart itself, and must not take its connection from the payment part's pool.
+    """
 
     def get_total(self, cart_id: UUID) -> CartTotal: ...
 
 
-# The base schema's sample cart: 1 x 45.00 + 2 x 12.50 USD.
-SAMPLE_CART_TOTAL = CartTotal(Decimal("70.00"), "USD")
+class MockTotalService:
+    """Stand-in for the shop's existing total service in local runs.
 
-
-class FixedTotalService:
-    """Stand-in for the existing total service in local runs: always the same total.
-
-    It never looks at the cart, so there is no calculation here.
+    It answers the way that service would, so local payments charge realistic amounts: the
+    sum of quantity x unit price over the cart's items, in the products' currency. It reads
+    with its own session, like a separate service. The payment part never calculates; it only
+    calls get_total().
     """
 
-    def __init__(self, total: CartTotal = SAMPLE_CART_TOTAL) -> None:
-        self._total = total
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
 
     def get_total(self, cart_id: UUID) -> CartTotal:
-        return self._total
+        # One row per currency: a cart can only be charged in one of them.
+        with self._session_factory() as session:
+            totals = session.execute(
+                select(Product.currency, func.sum(CartItem.unit_price * CartItem.quantity))
+                .join(Product, Product.id == CartItem.product_id)
+                .where(CartItem.cart_id == cart_id)
+                .group_by(Product.currency)
+            ).all()
+        if len(totals) != 1:
+            # Several currencies cannot give one total, and no rows is not expected (the
+            # payment part rejects an empty cart before it asks, FR-6). Either way the
+            # request ends in a 500, before anything is charged.
+            raise ValueError(f"Cart {cart_id} has items in {len(totals)} currencies")
+        currency, amount = totals[0]
+        return CartTotal(amount, currency)
 
 
 @dataclass(frozen=True)

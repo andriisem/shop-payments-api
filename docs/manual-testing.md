@@ -13,7 +13,7 @@ Start from a fresh database, so the sample cart is unpaid:
 ```bash
 docker compose down -v && docker compose up -d --wait db
 cp -n .env.example .env        # then put a secret in JWT_SECRET (see README)
-uv run --env-file .env flask --app app run      # keep this running in its own terminal
+uv run --env-file .env flask --app app:create_local_app run   # keep it running in its own terminal
 ```
 
 In a second terminal, from the project root, define these helpers (bash or zsh):
@@ -51,8 +51,9 @@ new_card() {   # a new, non-default card for Alice with the given mock token; pr
 ```
 
 The mock provider decides by the card's token: `decline` → declined, `error` → rejected,
-`timeout` → no answer, anything else → success. The local total service always answers
-70.00 USD.
+`timeout` → no answer, anything else → success. The local total service is a mock that answers
+like the shop's real one: quantity × unit price summed over the cart's items. New carts from
+`new_cart` hold one 45.00 USD kettle, so they cost 45.00.
 
 ## 1. HTTP basics
 
@@ -182,10 +183,39 @@ The `db` lines print `CREATE FUNCTION`, `CREATE TRIGGER` and so on. Expected for
 recorded, so the server log shows `Provider result Succeeded(provider_payment_id='mock_ch_…')
 was not recorded`. The payment stays `pending` and blocks the cart until it is reconciled.
 
+## 11. Totals come from the total service (A-3, EC-9, EC-11)
+
+The payment part never calculates the amount; it charges what the total service answers.
+Locally that is the mock, so the amount follows the cart's items.
+
+```bash
+# priced_cart <quantity> <unit price> <currency>: a cart for Alice with one product line.
+# The total uses the cart line's unit price; the product's own price (0 here) is not used.
+priced_cart() {
+  db "WITH p AS (INSERT INTO products (name, price, currency) VALUES ('Test', 0, '$3') RETURNING id),
+      c AS (INSERT INTO carts (user_id) VALUES ('$ALICE') RETURNING id),
+      i AS (INSERT INTO cart_items (cart_id, product_id, quantity, unit_price)
+            SELECT c.id, p.id, $1, $2 FROM c, p)
+      SELECT id FROM c"
+}
+```
+
+| Command | Expected |
+|---|---|
+| `pay $ALICE_TOKEN "$(priced_cart 3 89.99 USD)" t-1` | `201`, `"amount":"269.97"`, `"currency":"USD"` |
+| `pay $ALICE_TOKEN "$(priced_cart 2 10.00 EUR)" t-2` | `201`, `"amount":"20.00"`, `"currency":"EUR"` |
+| `pay $ALICE_TOKEN "$(priced_cart 1 0.00 USD)" t-3` | `422 invalid_amount` |
+| `pay $ALICE_TOKEN "$(priced_cart 1 -5.00 USD)" t-5` | `422 invalid_amount`: a negative total |
+| `pay $ALICE_TOKEN "$(priced_cart 1000000 9999999999.99 USD)" t-6` | `422 invalid_amount`: too large for `NUMERIC(12,2)` |
+| `pay $ALICE_TOKEN "$(priced_cart 1 700 JPY)" t-4` | `422 unsupported_currency`: 700 JPY would be charged as 70000 |
+
+A cart with items in two currencies cannot be totalled: the mock raises and the answer is a
+generic `500`. The real total service decides that case (A-3).
+
 ## What cannot be tested by hand
 
-- **Invalid totals and currencies** (EC-9, EC-11): the local total service always answers
-  70.00 USD. The automated tests inject zero, negative, fractional, huge, `NaN` and JPY totals.
+- **Fractional or `NaN` totals** (EC-9): cart prices are stored as `NUMERIC(12,2)`, so the mock
+  can never answer them. The automated tests inject them.
 - **An unconfirmed provider answer** and **a payment finalised elsewhere during the call**
   (FR-13, FR-14): they need a fake provider; see `tests/test_create_payment.py`.
 - **That no transaction is open during the provider call** (AC-17) and **that the card token

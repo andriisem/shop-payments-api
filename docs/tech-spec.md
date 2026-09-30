@@ -35,7 +35,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 |---|---|---|
 | A-1 | The caller's identity comes from a JWT access token issued by the shop's identity provider, sent as `Authorization: Bearer <token>`. The service verifies the token itself (NFR-9) instead of trusting the network. | The task has no auth system. A plain identity header set by a gateway is spoofable by anything that can reach the service; a payment endpoint must be able to verify who is paying (zero trust). |
 | A-2 | The endpoint calls the provider **synchronously**. If the outcome is unknown (timeout), the response is `202` and the client polls by repeating the request with the same idempotency key. | The mock needs no webhooks, and the same design still works with a real provider. |
-| A-3 | The amount comes from the shop's **existing** total service; the payment part never calculates it. It is called through a one-method interface, `TotalService.get_total(cart_id) -> CartTotal(amount, currency)`, inside TX1 while the cart row is locked, so the amount belongs to the cart as it was locked. That is a short internal call; the long external provider call is the one that must never run under a lock (NFR-3). A real client MUST call it with an explicit, short timeout, and the total service MUST NOT lock the cart itself (it would block on our lock). Its answer is external input and is validated (EC-9, EC-11). Locally and in tests a fixed stand-in replaces the service, like the mock provider. | The task says this service exists and that we do not calculate how much to pay. |
+| A-3 | The amount comes from the shop's **existing** total service; the payment part never calculates it. It is called through a one-method interface, `TotalService.get_total(cart_id) -> CartTotal(amount, currency)`, inside TX1 while the cart row is locked, so the amount belongs to the cart as it was locked. That is a short internal call; the long external provider call is the one that must never run under a lock (NFR-3). A real client MUST call it with an explicit, short timeout, and the total service MUST NOT lock the cart itself (it would block on our lock). Its answer is external input and is validated (EC-9, EC-11). Locally a mock replaces it, like the mock provider: it answers the way the existing service would (the sum of quantity × unit price over the cart's items, in the products' currency, read with its own session), so local payments charge realistic amounts. It cannot total a cart in more than one currency and raises, which gives a 500. The mock lives in `app/external.py`, outside the payment part. The tests use a fake that returns whatever each test sets. | The task says this service exists and that we do not calculate how much to pay. |
 | A-5 | When the request has no `payment_method_id`, the user's default method is used. If there are several defaults, the most recently created one wins. | The base schema does not enforce a single default. |
 | A-6 | Stock is not checked or decremented. | That is order fulfilment (see Out of Scope). |
 | A-7 | The mock provider's result depends on the token (see Mock payment provider). | Tests need deterministic results. |
@@ -74,7 +74,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 | NFR-5 | **Access control:** every lookup filters by `user_id`. Another user's carts and payment methods return `404`, never `403`, so their existence is not revealed. |
 | NFR-6 | **Timeouts:** a real provider client MUST call the provider with an explicit timeout (e.g. 10 s) and raise `ProviderTimeoutError` when it expires. The mock makes no network call, so it has no timeout setting. |
 | NFR-7 | **Observability:** every log line for a payment carries `payment_id`, `cart_id` and `user_id`. |
-| NFR-8 | **Testability:** the provider and the total service are injected via `create_app()`. Tests run against a real PostgreSQL, because partial indexes and `FOR UPDATE` cannot be tested on SQLite. |
+| NFR-8 | **Testability:** the provider and the total service are required arguments of `create_app()`, so nothing silently falls back to a mock; `create_local_app()` wires the mocks for local runs. Tests run against a real PostgreSQL, because partial indexes and `FOR UPDATE` cannot be tested on SQLite. |
 | NFR-9 | **Authentication:** every request MUST carry `Authorization: Bearer <JWT>`. The service verifies the signature (HS256 with a secret of at least 32 bytes from config; only that algorithm is accepted, never `none`), `exp` (required, 30 s leeway for clock skew), `iat` (required, not in the future; a token may live at most 15 minutes, `exp − iat ≤ 900 s`), `nbf` when present, `iss` and `aud` (`aud` may be a list that contains this service, per RFC 7519). `exp` and `iat` MUST be numbers. The JWT header `typ` MUST be `at+jwt` or `application/at+jwt`, case-insensitive (RFC 9068), so ID tokens and refresh tokens are rejected even if their other claims match. `sub` is the user id as a canonical UUID, and the user MUST exist. Any failure is `401 unauthenticated` with `WWW-Authenticate: Bearer`; the reason is logged, never returned. Authentication runs as middleware before the route, so the route and the service only see a verified `user_id`. `OPTIONS` is answered without a token (200 with `Allow`, no data), because CORS preflights never carry credentials. |
 
 ---
@@ -376,11 +376,11 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 
 ```
 app/
-  __init__.py            # create_app(provider=..., total_service=...) factory
+  __init__.py            # create_app(config, provider=, total_service=); create_local_app() for local runs
   auth.py                # JWT verification + before_request middleware (NFR-9)
-  external.py            # systems outside the payment part: PaymentProvider + mock, TotalService + fixed stand-in
+  external.py            # systems outside the payment part: PaymentProvider + mock, TotalService + mock
   config.py              # DATABASE_URL, JWT_SECRET/ISSUER/AUDIENCE
-  db.py                  # engine, session
+  db.py                  # engine (isolation level, hidden SQL parameters), session factory
   models.py              # ORM mappings + CartStatus, PaymentStatus enums
   payments/
     routes.py            # Blueprint: parse/validate → service → serialize
@@ -398,6 +398,7 @@ tests/
   test_auth.py           # AC-21: token checks
   test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, AC-16, EC-5
   test_transactions.py   # no open transaction during the provider call, TX2 failure: AC-17, AC-18, EC-10
+  test_mock_total_service.py # the local total-service mock and the app's default wiring (A-3)
   test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7, EC-9, EC-11
   test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)

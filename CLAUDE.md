@@ -19,7 +19,7 @@ uv run mypy                      # strict, app/ only
 
 - `app/payments/routes.py`: HTTP only (parse, validate, serialize). No business logic.
 - `app/payments/service.py`: `PaymentService.pay_cart()` implements the spec's payment flow (TX1 → provider → TX2).
-- `app/external.py`: the systems outside the payment part (payment provider, the shop's existing total service) and their stand-ins. Injected; tests swap them via `create_app()`. The payment part never calculates the amount.
+- `app/external.py`: the systems outside the payment part (payment provider, the shop's existing total service) and their stand-ins. Required arguments of `create_app()`; tests pass fakes, `create_local_app()` passes the mocks. The payment part never calculates the amount.
 - `app/payments/errors.py`: domain errors carry `code` + HTTP status. A single error handler maps them.
 - `migrations/`: plain SQL. `001_base_schema.sql` is the provided schema and must never be edited. Add new numbered files.
 

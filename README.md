@@ -24,7 +24,7 @@ Create your local settings. `.env` is gitignored; set `JWT_SECRET` in it:
 ```bash
 cp .env.example .env
 python3 -c 'import secrets; print(secrets.token_urlsafe(48))'   # paste as JWT_SECRET
-uv run --env-file .env flask --app app run                        # http://127.0.0.1:5000
+uv run --env-file .env flask --app app:create_local_app run       # http://127.0.0.1:5000
 ```
 
 Pay Alice's sample cart. Tokens normally come from the identity provider; for local testing
@@ -64,6 +64,7 @@ uv run mypy                                      # strict, app/ only
 | `test_concurrency.py` | Real threads racing on one cart: at most one charge |
 | `test_transactions.py` | No transaction or lock during the provider call; a failed TX2 stays `pending` |
 | `test_auth.py` | Every way an access token can be invalid |
+| `test_mock_total_service.py` | The local total-service mock, and that the app charges what it answers |
 | `test_payments_schema.py` | The table's constraints, which are the last line of defence |
 
 ## The API
@@ -120,7 +121,9 @@ docker compose exec db psql -U shop -d shop_payments -c "INSERT INTO user_paymen
 - **Scope.** Users, carts, the total calculation service and saved cards already exist. This
   service builds only the payment part. It **never calculates** the amount: it asks the
   existing total service through a one-method interface (`TotalService` in `app/external.py`).
-  Locally a stand-in always answers 70.00 USD, the total of the sample cart.
+  Locally a mock stands in for it and answers the way that service would: the sum of
+  quantity × unit price over the cart's items, in the products' currency. A cart with items in
+  more than one currency cannot be totalled and fails with a 500.
 - **Identity.** The caller is identified by a JWT access token from the shop's identity
   provider, which the service verifies itself: signature, expiry, issuer, audience, token type
   `at+jwt`, at most 15 minutes of lifetime, and that the user exists. Issuing and refreshing
