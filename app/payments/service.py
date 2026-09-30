@@ -192,9 +192,7 @@ class PaymentService:
                 if stored is not None:
                     return self._replay(stored, request)
             elif constraint == UNIQUE_LIVE_PAYMENT_PER_CART:
-                live_payment_id = self._live_payment_id(session, request)
-                if live_payment_id is not None:
-                    raise PaymentInProgressError(live_payment_id)
+                self._raise_if_live_payment(session, request)
         raise error
 
     def _reserve(self, request: PaymentRequest) -> ChargeAttempt | StoredPayment:
@@ -249,19 +247,19 @@ class PaymentService:
             raise CartNotActiveError()
         if not session.scalar(select(exists().where(CartItem.cart_id == cart.id))):
             raise CartEmptyError()
-        live_payment_id = self._live_payment_id(session, request)
-        if live_payment_id is not None:
-            raise PaymentInProgressError(live_payment_id)
+        self._raise_if_live_payment(session, request)
 
     @staticmethod
-    def _live_payment_id(session: Session, request: PaymentRequest) -> UUID | None:
-        return session.scalar(
+    def _raise_if_live_payment(session: Session, request: PaymentRequest) -> None:
+        live_payment_id = session.scalar(
             select(Payment.id).where(
                 Payment.cart_id == request.cart_id,
                 Payment.user_id == request.user_id,
                 Payment.status.in_(LIVE_STATUSES),
             )
         )
+        if live_payment_id is not None:
+            raise PaymentInProgressError(live_payment_id)
 
     @staticmethod
     def _resolve_payment_method(session: Session, request: PaymentRequest) -> UserPaymentMethod:
