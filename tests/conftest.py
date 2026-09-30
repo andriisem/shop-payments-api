@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pytest
@@ -10,8 +10,9 @@ from sqlalchemy import Engine, create_engine, make_url, text
 
 from app import create_app
 from app.config import Config
+from app.external import ChargeResult
 from tests.factories import CartFixture, create_cart_fixture
-from tests.fakes import FakeTotalService, RecordingProvider
+from tests.fakes import ChargeCall, FakeTotalService, RecordingProvider
 from tests.tokens import JWT_AUDIENCE, JWT_ISSUER, JWT_SECRET
 
 TEST_DATABASE_URL = os.environ.get(
@@ -99,3 +100,32 @@ def app(provider: RecordingProvider, total_service: FakeTotalService) -> Iterato
 @pytest.fixture
 def client(app: Flask) -> FlaskClient:
     return app.test_client()
+
+
+@pytest.fixture
+def break_tx2(engine: Engine, provider: RecordingProvider) -> Generator[None]:
+    """During the provider call, make every UPDATE on payments fail, like a DB error in TX2.
+
+    The trigger is installed after TX1 committed the payment, and removed after the test.
+    """
+
+    def install_failing_trigger(call: ChargeCall) -> ChargeResult | None:
+        with engine.begin() as conn:
+            # If a regression left a transaction open on payments, fail instead of hanging.
+            conn.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
+            conn.exec_driver_sql(
+                "CREATE FUNCTION fail_payment_update() RETURNS trigger LANGUAGE plpgsql AS"
+                " $$ BEGIN RAISE EXCEPTION 'simulated TX2 failure'; END $$"
+            )
+            conn.exec_driver_sql(
+                "CREATE TRIGGER fail_payment_update BEFORE UPDATE ON payments"
+                " FOR EACH ROW EXECUTE FUNCTION fail_payment_update()"
+            )
+        provider.on_charge = None  # only the first request breaks TX2
+        return None
+
+    provider.on_charge = install_failing_trigger
+    yield
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP TRIGGER IF EXISTS fail_payment_update ON payments")
+        conn.exec_driver_sql("DROP FUNCTION IF EXISTS fail_payment_update()")

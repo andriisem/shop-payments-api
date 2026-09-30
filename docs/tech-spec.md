@@ -389,7 +389,8 @@ migrations/
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
   test_auth.py           # AC-21: token checks
-  test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, EC-5
+  test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, AC-16, EC-5
+  test_transactions.py   # no open transaction during the provider call, TX2 failure: AC-17, AC-18, EC-10
   test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7, EC-9, EC-11
   test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)

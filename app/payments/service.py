@@ -222,7 +222,16 @@ class PaymentService:
         outcome = self._charge(attempt, log)
         if isinstance(outcome, Unknown):
             return PaymentResult(attempt.payment)  # still pending, as committed in TX1
-        return PaymentResult(self._finalise(attempt, outcome, log))
+        try:
+            return PaymentResult(self._finalise(attempt, outcome, log))
+        except Exception:
+            # EC-10: the provider answered but TX2 failed. The payment is almost always still
+            # pending (TX2 rolled back); only if the connection dropped during COMMIT may it
+            # already be final, and a same-key replay then reports the true state. Answer 202,
+            # never a 500, and log the provider result for reconciliation. The DB may be down,
+            # so nothing is re-read.
+            log.exception("Provider result %s was not recorded; answering pending", outcome)
+            return PaymentResult(attempt.payment)
 
     @staticmethod
     def _find_by_key(session: Session, request: PaymentRequest) -> StoredPayment | None:

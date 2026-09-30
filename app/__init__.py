@@ -32,6 +32,8 @@ def create_app(
         # committed while it waited. REPEATABLE READ would hide them, so pin the level.
         isolation_level="READ COMMITTED",
         connect_args={"application_name": config.application_name},
+        # Keep SQL parameters out of error messages and logs (NFR-4, defence in depth).
+        hide_parameters=True,
     )
 
     app = Flask(__name__)

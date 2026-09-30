@@ -205,3 +205,45 @@ def test_fr14_payment_finalised_elsewhere_during_the_call_keeps_that_state(
     assert payment["status"] == "succeeded"
     assert payment["provider_payment_id"] == "ch_1"
     assert stored_payment(engine, payment["id"])["status"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("token", "crash"),
+    [
+        ("tok_SECRET_visa", False),
+        ("tok_decline_SECRET", False),
+        ("tok_error_SECRET", False),
+        ("tok_timeout_SECRET", False),
+        ("tok_SECRET_visa", True),  # the provider's own error message contains the token
+        ("tok_SECRET_visa", "tx2"),  # EC-10: the only log line with a full SQL traceback
+    ],
+    ids=["succeeded", "declined", "rejected", "timeout", "unexpected-error", "tx2-failure"],
+)
+def test_ac16_card_token_never_reaches_a_response_or_a_log_line(
+    client: FlaskClient,
+    engine: Engine,
+    alice: CartFixture,
+    provider: RecordingProvider,
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+    token: str,
+    crash: bool | str,
+) -> None:
+    card = add_card(engine, alice, token)
+    if crash == "tx2":
+        request.getfixturevalue("break_tx2")
+    elif crash:
+
+        def leak(call: ChargeCall) -> ChargeResult | None:
+            raise ConnectionError(f"could not charge {call.token}")
+
+        provider.on_charge = leak
+
+    with caplog.at_level(logging.DEBUG):
+        first = pay(client, alice, payment_method_id=card)
+        replay = pay(client, alice, payment_method_id=card)
+
+    assert provider.calls[0].token == token  # the provider did get it
+    for response in (first, replay):
+        assert "SECRET" not in response.get_data(as_text=True)
+    assert "SECRET" not in caplog.text
