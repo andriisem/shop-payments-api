@@ -11,16 +11,27 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import Cart, Payment, UserPaymentMethod
+from app.models import Cart, CartItem, Payment, User, UserPaymentMethod
+from app.payments.errors import (
+    CartEmptyError,
+    CartNotActiveError,
+    CartNotFoundError,
+    InvalidAmountError,
+    NoPaymentMethodError,
+    PaymentInProgressError,
+    PaymentMethodNotFoundError,
+    UnauthenticatedError,
+)
 from app.payments.provider import PaymentProvider, ProviderRejectedError, ProviderTimeoutError
-from app.payments.totals import CartTotalService
+from app.payments.totals import CartTotal, CartTotalService
 
 logger = logging.getLogger(__name__)
 
 CENT = Decimal("0.01")
+LIVE_STATUSES = ("pending", "succeeded")
 
 
 @dataclass(frozen=True)
@@ -146,16 +157,21 @@ class PaymentService:
             return attempt.payment  # still pending, exactly as committed in TX1
         return self._finalise(attempt, outcome, log)
 
+    def authenticate(self, user_id: UUID) -> None:
+        """401 for an unknown caller, checked before any other validation."""
+        with self._session_factory() as session:
+            if session.get(User, user_id) is None:
+                raise UnauthenticatedError()
+
     def _reserve(self, request: PaymentRequest) -> ChargeAttempt:
-        """TX1: lock the cart, create the pending payment and commit it (FR-9)."""
+        """TX1: lock the cart, create the pending payment and commit it (FR-9).
+
+        Any domain error rolls TX1 back, so a rejected request leaves nothing behind.
+        """
         with self._session_factory.begin() as session:
-            cart = session.scalars(
-                select(Cart)
-                .where(Cart.id == request.cart_id, Cart.user_id == request.user_id)
-                .with_for_update()
-            ).one()
+            cart = self._lock_payable_cart(session, request)
             payment_method = self._resolve_payment_method(session, request)
-            total = self._totals.calculate(session, cart.id)
+            total = self._calculate_total(session, cart)
             amount_minor = to_minor_units(total.amount)  # rejects >2 decimals before quantizing
             payment = Payment(
                 cart_id=cart.id,
@@ -176,18 +192,58 @@ class PaymentService:
             )
 
     @staticmethod
-    def _resolve_payment_method(session: Session, request: PaymentRequest) -> UserPaymentMethod:
-        query = select(UserPaymentMethod).where(UserPaymentMethod.user_id == request.user_id)
-        if request.payment_method_id is None:
-            # A-5: several defaults are possible; the most recently created one wins.
-            query = (
-                query.where(UserPaymentMethod.is_default)
-                .order_by(UserPaymentMethod.created_at.desc())
-                .limit(1)
+    def _lock_payable_cart(session: Session, request: PaymentRequest) -> Cart:
+        """FR-5, FR-6. The row lock serializes concurrent payments for one cart (NFR-2)."""
+        cart = session.scalars(
+            select(Cart)
+            .where(Cart.id == request.cart_id, Cart.user_id == request.user_id)
+            .with_for_update()
+        ).one_or_none()
+        if cart is None:
+            raise CartNotFoundError()
+        if cart.status != "active":
+            raise CartNotActiveError()
+        if not session.scalar(select(exists().where(CartItem.cart_id == cart.id))):
+            raise CartEmptyError()
+        live_payment_id = session.scalar(
+            select(Payment.id).where(
+                Payment.cart_id == cart.id,
+                Payment.user_id == request.user_id,
+                Payment.status.in_(LIVE_STATUSES),
             )
-        else:
-            query = query.where(UserPaymentMethod.id == request.payment_method_id)
-        return session.scalars(query).one()
+        )
+        if live_payment_id is not None:
+            raise PaymentInProgressError(live_payment_id)
+        return cart
+
+    @staticmethod
+    def _resolve_payment_method(session: Session, request: PaymentRequest) -> UserPaymentMethod:
+        """FR-7: the caller's own card, or their default (A-5)."""
+        query = select(UserPaymentMethod).where(UserPaymentMethod.user_id == request.user_id)
+        if request.payment_method_id is not None:
+            payment_method = session.scalars(
+                query.where(UserPaymentMethod.id == request.payment_method_id)
+            ).one_or_none()
+            if payment_method is None:
+                raise PaymentMethodNotFoundError()
+            return payment_method
+
+        # A-5: several defaults are possible; the most recently created one wins.
+        default = session.scalars(
+            query.where(UserPaymentMethod.is_default)
+            .order_by(UserPaymentMethod.created_at.desc(), UserPaymentMethod.id.desc())
+            .limit(1)
+        ).one_or_none()
+        if default is None:
+            raise NoPaymentMethodError()
+        return default
+
+    def _calculate_total(self, session: Session, cart: Cart) -> CartTotal:
+        """FR-8: the amount comes from the total service and must be positive."""
+        total = self._totals.calculate(session, cart.id)
+        if total.amount <= 0:
+            raise InvalidAmountError()
+        return total
 
     def _charge(
         self, attempt: ChargeAttempt, log: logging.LoggerAdapter[logging.Logger]

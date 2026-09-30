@@ -1,6 +1,81 @@
+import json
+import re
 from typing import Any
+from uuid import UUID
 
-from app.payments.service import PaymentView
+from flask import Request
+from werkzeug.datastructures import Headers
+from werkzeug.exceptions import LengthRequired
+
+from app.payments.errors import (
+    DomainError,
+    InvalidRequestError,
+    MissingIdempotencyKeyError,
+    UnauthenticatedError,
+)
+from app.payments.service import PaymentRequest, PaymentView
+
+# FR-2: 1-255 printable ASCII characters.
+IDEMPOTENCY_KEY = re.compile(r"[\x20-\x7e]{1,255}")
+# EC-7: only the canonical 8-4-4-4-12 form; uuid.UUID() alone also accepts urn:, braces, etc.
+CANONICAL_UUID = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+# FR-8: the client never sends the amount, so any field but these is rejected.
+ALLOWED_FIELDS = {"payment_method_id"}
+
+
+def parse_user_id(headers: Headers) -> UUID:
+    return _parse_uuid(headers.get("X-User-Id"), UnauthenticatedError)
+
+
+def read_body(request: Request) -> bytes:
+    """411/413 come before key and body validation, because the body is read first.
+
+    A chunked body has no length: depending on the WSGI server it is cut at the size limit
+    or dropped, and a dropped body would silently mean "use the default card".
+    """
+    if "Transfer-Encoding" in request.headers:
+        raise LengthRequired()
+    return request.get_data()  # MAX_CONTENT_LENGTH turns an oversized body into 413
+
+
+def parse_payment_request(
+    user_id: UUID, cart_id: str, headers: Headers, raw_body: bytes
+) -> PaymentRequest:
+    """Validate the rest of the request, after the caller is known."""
+    idempotency_key = headers.get("Idempotency-Key")
+    if not idempotency_key:
+        raise MissingIdempotencyKeyError()
+    if not IDEMPOTENCY_KEY.fullmatch(idempotency_key):
+        raise InvalidRequestError()
+    body = _parse_body(raw_body)
+    payment_method_id = body.get("payment_method_id")
+    if payment_method_id is not None:
+        payment_method_id = _parse_uuid(payment_method_id, InvalidRequestError)
+    return PaymentRequest(
+        user_id=user_id,
+        cart_id=_parse_uuid(cart_id, InvalidRequestError),
+        idempotency_key=idempotency_key,
+        payment_method_id=payment_method_id,
+    )
+
+
+def _parse_uuid(value: object, error: type[DomainError]) -> UUID:
+    if not isinstance(value, str) or not CANONICAL_UUID.fullmatch(value):
+        raise error()
+    return UUID(value)
+
+
+def _parse_body(raw_body: bytes) -> dict[str, Any]:
+    """An empty body means "use the default card"; anything else must be a JSON object."""
+    if not raw_body.strip():
+        return {}
+    try:
+        body = json.loads(raw_body)
+    except (ValueError, RecursionError):  # RecursionError: deeply nested JSON
+        raise InvalidRequestError() from None
+    if not isinstance(body, dict) or not body.keys() <= ALLOWED_FIELDS:
+        raise InvalidRequestError()
+    return body
 
 
 def serialize_payment(payment: PaymentView) -> dict[str, Any]:

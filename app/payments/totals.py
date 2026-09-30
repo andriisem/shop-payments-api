@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import CartItem, Product
+from app.payments.errors import CartEmptyError, MixedCurrenciesError
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,9 @@ class DefaultCartTotalService:
             .where(CartItem.cart_id == cart_id)
             .group_by(Product.currency)
         ).all()
-        if len(rows) != 1:
-            raise ValueError(f"Expected items in exactly one currency, got {len(rows)}")
+        if not rows:
+            raise CartEmptyError()
+        if len(rows) > 1:
+            raise MixedCurrenciesError()  # A-4
         currency, amount = rows[0]
         return CartTotal(amount=amount, currency=currency)

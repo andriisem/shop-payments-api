@@ -1,10 +1,17 @@
 import click
 from flask import Flask
 from sqlalchemy import create_engine
+from werkzeug.exceptions import HTTPException
 
 from app.config import Config
 from app.db import create_session_factory
 from app.migrations import apply_migrations
+from app.payments.errors import (
+    DomainError,
+    handle_domain_error,
+    handle_http_error,
+    handle_unexpected_error,
+)
 from app.payments.provider import MockPaymentProvider, PaymentProvider
 from app.payments.routes import payments
 from app.payments.service import PaymentService
@@ -21,6 +28,7 @@ def create_app(
     engine = create_engine(config.database_url, pool_pre_ping=True)
 
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = config.max_body_bytes
     app.extensions["engine"] = engine
     app.extensions["payment_service"] = PaymentService(
         create_session_factory(engine),
@@ -28,6 +36,9 @@ def create_app(
         totals=totals or DefaultCartTotalService(),
     )
     app.register_blueprint(payments)
+    app.register_error_handler(DomainError, handle_domain_error)
+    app.register_error_handler(HTTPException, handle_http_error)
+    app.register_error_handler(Exception, handle_unexpected_error)
 
     @app.cli.command("migrate")
     def migrate() -> None:

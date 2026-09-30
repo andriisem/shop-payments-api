@@ -12,6 +12,12 @@ class Base(DeclarativeBase):
     pass
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+
+
 class Product(Base):
     __tablename__ = "products"
 
