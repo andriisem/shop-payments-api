@@ -40,6 +40,8 @@ def to_cents(amount: Decimal) -> Decimal:
 def to_minor_units(amount: Decimal) -> int:
     """Decimal("70.00") -> 7000. Valid for 2-decimal currencies only."""
     minor = amount * 100
+    # The service only passes amounts that is_chargeable_amount() accepted, so this cannot
+    # fail there. It stays as a backstop: int() would silently drop a fraction of a cent.
     if minor != minor.to_integral_value():
         raise ValueError(f"Amount {amount} has more than 2 decimal places")
     return int(minor)
