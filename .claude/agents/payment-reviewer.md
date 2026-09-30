@@ -23,7 +23,11 @@ You review changes to a payment service. You do not edit files. Your only output
 - Does any code path mark a payment `failed` after a timeout or unknown error? (It must stay `pending`.)
 
 **Lost / inconsistent state**
-- Is a DB transaction or lock held during the provider call?
+- Is a DB transaction or lock held during the provider call? Check for SQLAlchemy autobegin: any
+  query or expired-attribute access (e.g. `payment.id` after `commit()`) between the TX1 commit and
+  `provider.charge()` opens a new transaction.
+- If TX2 fails after the provider returned, does the endpoint return 202 with the payment still
+  `pending`, not a 500 (EC-10)?
 - Do `payment → succeeded` and `cart → checked_out` happen in one transaction?
 - Are status updates guarded with `AND status = 'pending'`?
 - Are unique-violation races (`IntegrityError`) handled by re-reading, not by returning 500?
@@ -42,6 +46,8 @@ You review changes to a payment service. You do not edit files. Your only output
 **Spec conformance**
 - Do the status codes, error codes and response fields match the spec's API contract exactly?
 - Does every new behaviour have a test that references its AC/EC id? Is there any behaviour with no test?
+- Are internal guarantees that no response shows (FR-9, NFR-3) tested from a separate DB connection,
+  not only via the HTTP response (AC-17)?
 - Is anything built that the spec lists as out of scope?
 
 ## Output
