@@ -71,6 +71,14 @@ class MixedCurrenciesError(DomainError):
     code, status, message = "mixed_currencies", 422, "Cart items have different currencies."
 
 
+class IdempotencyKeyReusedError(DomainError):
+    code, status, message = (
+        "idempotency_key_reused",
+        422,
+        "Idempotency-Key was already used for a different request.",
+    )
+
+
 class InvalidAmountError(DomainError):
     code, status, message = "invalid_amount", 422, "Cart total must be greater than zero."
 

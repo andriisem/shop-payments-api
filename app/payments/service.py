@@ -11,7 +11,9 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
+import psycopg
 from sqlalchemy import exists, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Cart, CartItem, Payment, User, UserPaymentMethod
@@ -19,6 +21,7 @@ from app.payments.errors import (
     CartEmptyError,
     CartNotActiveError,
     CartNotFoundError,
+    IdempotencyKeyReusedError,
     InvalidAmountError,
     NoPaymentMethodError,
     PaymentInProgressError,
@@ -69,6 +72,20 @@ class PaymentView:
             created_at=payment.created_at,
             updated_at=payment.updated_at,
         )
+
+
+@dataclass(frozen=True)
+class PaymentResult:
+    payment: PaymentView
+    replayed: bool = False  # FR-3: sent back as Idempotent-Replayed: true
+
+
+@dataclass(frozen=True)
+class StoredPayment:
+    """A payment found by its idempotency key, with the fingerprint of its request."""
+
+    payment: PaymentView
+    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -142,8 +159,20 @@ class PaymentService:
         self._provider = provider
         self._totals = totals
 
-    def pay_cart(self, request: PaymentRequest) -> PaymentView:
-        attempt = self._reserve(request)
+    def pay_cart(self, request: PaymentRequest) -> PaymentResult:
+        with self._session_factory() as session:
+            stored = self._find_by_key(session, request)
+        if stored is not None:
+            return self._replay(stored, request)
+
+        try:
+            reserved = self._reserve(request)
+        except IntegrityError as error:
+            return self._on_conflict(error, request)
+        if isinstance(reserved, StoredPayment):
+            return self._replay(reserved, request)
+
+        attempt = reserved
         log = logging.LoggerAdapter(
             logger,
             {
@@ -154,8 +183,8 @@ class PaymentService:
         )
         outcome = self._charge(attempt, log)
         if isinstance(outcome, Unknown):
-            return attempt.payment  # still pending, exactly as committed in TX1
-        return self._finalise(attempt, outcome, log)
+            return PaymentResult(attempt.payment)  # still pending, as committed in TX1
+        return PaymentResult(self._finalise(attempt, outcome, log))
 
     def authenticate(self, user_id: UUID) -> None:
         """401 for an unknown caller, checked before any other validation."""
@@ -163,13 +192,54 @@ class PaymentService:
             if session.get(User, user_id) is None:
                 raise UnauthenticatedError()
 
-    def _reserve(self, request: PaymentRequest) -> ChargeAttempt:
+    @staticmethod
+    def _find_by_key(session: Session, request: PaymentRequest) -> StoredPayment | None:
+        payment = session.scalars(
+            select(Payment).where(
+                Payment.user_id == request.user_id,
+                Payment.idempotency_key == request.idempotency_key,
+            )
+        ).one_or_none()
+        if payment is None:
+            return None
+        return StoredPayment(PaymentView.from_model(payment), payment.request_fingerprint)
+
+    @staticmethod
+    def _replay(stored: StoredPayment, request: PaymentRequest) -> PaymentResult:
+        """FR-3: the current state, no provider call. FR-4: only for the same request."""
+        if stored.fingerprint != request_fingerprint(request):
+            raise IdempotencyKeyReusedError()
+        return PaymentResult(stored.payment, replayed=True)
+
+    def _on_conflict(self, error: IntegrityError, request: PaymentRequest) -> PaymentResult:
+        """Backstops for races that got past the checks in TX1 (EC-1, EC-2)."""
+        constraint = (
+            error.orig.diag.constraint_name if isinstance(error.orig, psycopg.Error) else None
+        )
+        with self._session_factory() as session:
+            if constraint == "uq_payments_user_idempotency_key":
+                stored = self._find_by_key(session, request)
+                if stored is not None:
+                    return self._replay(stored, request)
+            elif constraint == "uq_payments_cart_live":
+                live_payment_id = self._live_payment_id(session, request)
+                if live_payment_id is not None:
+                    raise PaymentInProgressError(live_payment_id)
+        raise error
+
+    def _reserve(self, request: PaymentRequest) -> ChargeAttempt | StoredPayment:
         """TX1: lock the cart, create the pending payment and commit it (FR-9).
 
         Any domain error rolls TX1 back, so a rejected request leaves nothing behind.
         """
         with self._session_factory.begin() as session:
-            cart = self._lock_payable_cart(session, request)
+            cart = self._lock_cart(session, request)
+            # EC-2: a request with the same key may have committed while we waited for the
+            # lock. Checked before the cart rules: that payment may have checked the cart out.
+            stored = self._find_by_key(session, request)
+            if stored is not None:
+                return stored
+            self._check_payable(session, cart, request)
             payment_method = self._resolve_payment_method(session, request)
             total = self._calculate_total(session, cart)
             amount_minor = to_minor_units(total.amount)  # rejects >2 decimals before quantizing
@@ -192,8 +262,8 @@ class PaymentService:
             )
 
     @staticmethod
-    def _lock_payable_cart(session: Session, request: PaymentRequest) -> Cart:
-        """FR-5, FR-6. The row lock serializes concurrent payments for one cart (NFR-2)."""
+    def _lock_cart(session: Session, request: PaymentRequest) -> Cart:
+        """FR-5. The row lock serializes concurrent payments for one cart (NFR-2)."""
         cart = session.scalars(
             select(Cart)
             .where(Cart.id == request.cart_id, Cart.user_id == request.user_id)
@@ -201,20 +271,27 @@ class PaymentService:
         ).one_or_none()
         if cart is None:
             raise CartNotFoundError()
+        return cart
+
+    def _check_payable(self, session: Session, cart: Cart, request: PaymentRequest) -> None:
+        """FR-6: active, has items, no live payment."""
         if cart.status != "active":
             raise CartNotActiveError()
         if not session.scalar(select(exists().where(CartItem.cart_id == cart.id))):
             raise CartEmptyError()
-        live_payment_id = session.scalar(
+        live_payment_id = self._live_payment_id(session, request)
+        if live_payment_id is not None:
+            raise PaymentInProgressError(live_payment_id)
+
+    @staticmethod
+    def _live_payment_id(session: Session, request: PaymentRequest) -> UUID | None:
+        return session.scalar(
             select(Payment.id).where(
-                Payment.cart_id == cart.id,
+                Payment.cart_id == request.cart_id,
                 Payment.user_id == request.user_id,
                 Payment.status.in_(LIVE_STATUSES),
             )
         )
-        if live_payment_id is not None:
-            raise PaymentInProgressError(live_payment_id)
-        return cart
 
     @staticmethod
     def _resolve_payment_method(session: Session, request: PaymentRequest) -> UserPaymentMethod:

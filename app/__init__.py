@@ -25,7 +25,14 @@ def create_app(
     totals: CartTotalService | None = None,
 ) -> Flask:
     config = config or Config.from_env()
-    engine = create_engine(config.database_url, pool_pre_ping=True)
+    engine = create_engine(
+        config.database_url,
+        pool_pre_ping=True,
+        # The key re-check under the cart lock (EC-2) relies on each statement seeing rows
+        # committed while it waited. REPEATABLE READ would hide them, so pin the level.
+        isolation_level="READ COMMITTED",
+        connect_args={"application_name": config.application_name},
+    )
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = config.max_body_bytes
