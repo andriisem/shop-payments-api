@@ -407,6 +407,7 @@ tests/
 scripts/
   dev_token.py           # local testing only: mints an access token (the identity provider's job)
 docker-compose.yml       # postgres:16
+.github/workflows/ci.yml # CI: ruff, mypy, pytest on postgres:16, commitlint, gitleaks
 README.md                # run app + tests, assumptions
 ```
 

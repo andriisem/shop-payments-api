@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ruff, mypy, pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # Tests run against real PostgreSQL (partial indexes, FOR UPDATE). The test suite
+      # creates its own shop_payments_test database and applies the migrations itself.
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shop
+          POSTGRES_PASSWORD: shop
+          POSTGRES_DB: shop_payments
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U shop -d shop_payments"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://shop:shop@localhost:5434/shop_payments_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Uses .commitlintrc.yaml (Conventional Commits, body lines of at most 100 chars).
+      - uses: wagoid/commitlint-github-action@v6
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -56,6 +56,11 @@ uv run ruff format --check . && uv run ruff check .
 uv run mypy                                      # strict, app/ only
 ```
 
+GitHub Actions (`.github/workflows/ci.yml`) runs the same checks on every push and pull
+request to `main`, with PostgreSQL 16 as a service container. It also checks commit messages
+(commitlint) and scans for secrets (gitleaks), like the local pre-commit hooks. There is no
+deploy step yet: the app has no real payment provider client to deploy with.
+
 | Test file | What it proves |
 |---|---|
 | `test_create_payment.py` | Outcomes: success, decline, provider error, timeout, the card token never leaks |
