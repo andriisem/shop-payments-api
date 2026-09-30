@@ -291,6 +291,8 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 | AC-14 | **Given** AC-13 **When** a request with a **new** key arrives for the same cart **Then** 409 `payment_in_progress`, and the provider is not called | FR-6,13 |
 | AC-15 | **Given** a payment that is already `succeeded` **When** the service tries to mark it `failed` **Then** no row is updated | FR-14 |
 | AC-16 | **Given** any response or log line **Then** it does not contain `provider_token` | NFR-4 |
+| AC-17 | **Given** a fake provider that inspects the DB from a separate connection inside `charge()` **When** a payment is made **Then** the payment row is visible as `pending`, `SELECT … FROM carts WHERE id = :cart_id FOR UPDATE NOWAIT` succeeds, and the request's connection is not `idle in transaction` (`pg_stat_activity`) | FR-9, NFR-3 |
+| AC-18 | **Given** a provider that returns success **When** TX2 raises a DB error **Then** 202, the payment stays `pending`, and the error is logged with `payment_id` | FR-13, EC-10 |
 
 ## 9. Edge Cases
 
@@ -305,6 +307,7 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 | EC-7 | Invalid UUID in path or body | 400 `invalid_request` |
 | EC-8 | Cart items in different currencies | 422 `mixed_currencies` |
 | EC-9 | Total is 0 | 422 `invalid_amount` (the DB CHECK is the backstop) |
+| EC-10 | TX2 fails (DB error, lost connection) after the provider returned a result | TX2 rolls back, so the payment stays `pending`. The response reflects the DB state: 202, never 500 and never `failed`. Log an error with `payment_id` and the provider result for reconciliation. A same-key retry replays 202 until reconciled (OS-5) |
 
 ---
 
@@ -354,12 +357,13 @@ migrations/
   002_payments.sql       # payments table
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
-  test_create_payment.py # AC-1 … AC-16
+  test_create_payment.py # AC-1 … AC-18
   test_concurrency.py    # EC-1, EC-2 (threads + real Postgres)
 docker-compose.yml       # postgres:16
 README.md                # run app + tests, assumptions
 ```
 
 - Routes contain no business logic. The service raises domain errors, and a single error handler maps them to the status codes.
+- **SQLAlchemy autobegin vs NFR-3:** any query after the TX1 commit silently opens a new transaction, including a lazy refresh of an expired attribute such as `payment.id` (`expire_on_commit=True` is the default). Copy the values the provider call needs into locals before committing, and make sure the session has no open transaction during `provider.charge()`. AC-17 checks this.
 - Concurrency tests use real threads and separate DB sessions. The rollback-per-test fixture does not work for these tests; they need a cleanup step instead.
 - Decimal → minor units: `int((amount * 100).to_integral_value())`. This is valid for 2-decimal currencies. The exponent per currency is a documented limitation.
