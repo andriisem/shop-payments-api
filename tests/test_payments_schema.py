@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
 from tests.factories import CartFixture, insert_payment
@@ -88,6 +88,18 @@ def test_provider_payment_id_is_unique(
         ({"amount": Decimal("0.00")}, "payments_amount_check"),  # EC-9 backstop
         ({"idempotency_key": ""}, "payments_idempotency_key_check"),  # FR-2
         ({"idempotency_key": "k" * 256}, "payments_idempotency_key_check"),  # FR-2
+        (
+            {"status": "failed", "failure_code": "Insufficient funds (code 51)"},
+            "chk_payments_failure_code_known",
+        ),  # NFR-4
+        (
+            {"status": "succeeded", "provider_payment_id": "ch_1", "failure_code": "card_declined"},
+            "chk_payments_only_failed_has_code",
+        ),  # FR-12
+        (
+            {"status": "pending", "failure_code": "card_declined"},
+            "chk_payments_only_failed_has_code",
+        ),  # FR-12, FR-13
     ],
     ids=[
         "succeeded-needs-provider-id",
@@ -96,6 +108,9 @@ def test_provider_payment_id_is_unique(
         "ec9-zero-amount",
         "fr2-empty-key",
         "fr2-key-too-long",
+        "nfr4-raw-provider-text",
+        "fr12-succeeded-has-no-code",
+        "fr12-pending-has-no-code",
     ],
 )
 def test_payment_state_invariants(
@@ -105,3 +120,18 @@ def test_payment_state_invariants(
         insert_payment(conn, alice, **payment)
 
     assert _violated_constraint(error) == constraint
+
+
+def test_fr16_payment_method_used_by_a_payment_cannot_be_deleted(
+    engine: Engine, alice: CartFixture
+) -> None:
+    with engine.begin() as conn:
+        insert_payment(conn, alice)
+
+    with pytest.raises(IntegrityError) as error, engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM user_payment_methods WHERE id = :id"),
+            {"id": alice.payment_method_id},
+        )
+
+    assert _violated_constraint(error) == "payments_payment_method_id_fkey"
