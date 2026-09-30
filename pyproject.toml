@@ -37,7 +37,10 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is how pytest works
+"tests/**" = [
+    "S101",              # assert is how pytest works
+    "S105", "S106", "S107",  # fake provider tokens like "tok_decline" are not secrets
+]
 
 [tool.mypy]
 python_version = "3.12"
@@ -46,4 +49,5 @@ files = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
