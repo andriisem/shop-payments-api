@@ -62,6 +62,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 | FR-13 | **Unknown outcome (timeout, lost connection):** the payment MUST stay `pending`, the response is `202`, and the cart stays blocked until the payment is reconciled. The payment MUST NOT be marked `failed`. |
 | FR-14 | Status changes MUST be guarded: `UPDATE … WHERE id = :id AND status = 'pending'`. Terminal states never change. |
 | FR-15 | While a cart has a live payment, cart changes (add or remove items, abandon) MUST be rejected. This is a contract that the cart service must follow. |
+| FR-16 | A payment keeps its references to the cart, the user and the payment method forever. A saved card that has been used by a payment MUST NOT be hard-deleted; the owner of `user_payment_methods` must soft-delete it instead. The foreign keys enforce this (the `DELETE` fails). This is a contract for the service that owns saved cards. |
 
 ## 4. Non-Functional Requirements
 
@@ -233,9 +234,21 @@ CREATE INDEX idx_payments_pending_created_at
 | `amount`, `currency` | Snapshot: what was actually charged, even if the cart or prices change later |
 | `request_fingerprint` | SHA-256 of `cart_id` + `payment_method_id` **as sent** (empty when omitted); detects key reuse with a different request (FR-4). The resolved method is stored in `payment_method_id` |
 | `provider_payment_id` | The provider's charge id, for refunds and reconciliation; unique |
-| `failure_code` | A fixed code, never raw provider text (NFR-4) |
+| `failure_code` | A fixed code, never raw provider text (NFR-4); enforced by `chk_payments_failure_code_known` (migration 003) |
 
 `updated_at` is set by the application (SQLAlchemy `onupdate`), to match the base schema, which has no triggers.
+
+Migration `003_payments_checks.sql` adds two backstops, so rules that the service enforces also hold in the database:
+
+```sql
+ALTER TABLE payments
+    -- NFR-4: only fixed codes are stored, never raw provider text.
+    ADD CONSTRAINT chk_payments_failure_code_known
+        CHECK (failure_code IN ('card_declined', 'provider_error')),
+    -- FR-12: only a failed payment carries a failure code.
+    ADD CONSTRAINT chk_payments_only_failed_has_code
+        CHECK (status = 'failed' OR failure_code IS NULL);
+```
 
 ### 7.2 Entity relationships
 
@@ -332,6 +345,7 @@ The mock remembers `idempotency_key → result`. A second call with the same key
 | OS-5 | Reconciliation job for stuck `pending` payments | Production follow-up. The schema already supports it (`idx_payments_pending_created_at`, provider idempotency by `payment.id`) |
 | OS-6 | Enforcing FR-15 inside the cart service | Another service owns it. This spec defines the contract only |
 | OS-7 | Payment event / audit log table, rate limiting | Useful in production. For this task, status + timestamps are enough (KISS) |
+| OS-8 | Soft delete for saved cards (FR-16) | The base schema has no `deleted_at` on `user_payment_methods`, and another service owns that table. This spec defines the contract only. When soft delete is added, FR-7 and A-5 MUST ignore deleted cards: an explicit deleted card → 404 `payment_method_not_found`, and a deleted default is never picked (→ the next default, or 422 `no_payment_method`) |
 
 ---
 
@@ -365,6 +379,7 @@ app/
 migrations/
   001_base_schema.sql    # provided base schema
   002_payments.sql       # payments table
+  003_payments_checks.sql # failure_code and succeeded-state CHECKs
 tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
   test_create_payment.py # AC-1 … AC-19
