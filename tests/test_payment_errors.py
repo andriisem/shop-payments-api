@@ -4,13 +4,16 @@ creates a payment."""
 import uuid
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 import pytest
 from flask.testing import FlaskClient
 from sqlalchemy import Engine, text
 from werkzeug.test import TestResponse
 
+from app import create_app
 from app.external import CartTotal
+from tests.conftest import make_test_config
 from tests.factories import (
     CartFixture,
     insert_cart,
@@ -160,7 +163,7 @@ def test_chunked_body_is_rejected(
     client: FlaskClient, engine: Engine, alice: CartFixture, provider: RecordingProvider
 ) -> None:
     # A chunked body can be cut or dropped by the WSGI layer, which would charge the
-    # default card instead of the requested one. The body is tiny, so require a length.
+    # default card instead of the requested one. The body is tiny, so it must have a length.
     headers = {
         **auth_headers(alice.user_id),
         "Idempotency-Key": "key-1",
@@ -292,8 +295,16 @@ def test_ac14_live_payment_blocks_a_new_key(
 
 @pytest.mark.parametrize(
     "amount",
-    [Decimal("0.00"), Decimal("-5.00"), Decimal("70.005")],
-    ids=["zero", "negative", "fraction-of-a-cent"],
+    [
+        Decimal("0.00"),
+        Decimal("-5.00"),
+        Decimal("70.005"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("1E+30"),
+        Decimal("10000000000.00"),  # does not fit NUMERIC(12,2)
+    ],
+    ids=["zero", "negative", "fraction-of-a-cent", "nan", "infinity", "huge", "too-many-digits"],
 )
 def test_ec9_total_must_be_positive_whole_cents(
     client: FlaskClient,
@@ -321,3 +332,43 @@ def test_a3_amount_is_whatever_the_total_service_says(
     assert response.get_json()["amount"] == "12.30"
     assert response.get_json()["currency"] == "EUR"
     assert total_service.calls == [alice.cart_id]
+
+
+@pytest.mark.parametrize(
+    "currency",
+    ["usd", "US", "", "JPY", "KWD"],
+    ids=["lower-case", "two-letters", "empty", "zero-decimal-jpy", "three-decimal-kwd"],
+)
+def test_ec11_currency_must_be_a_supported_2_decimal_code(
+    client: FlaskClient,
+    engine: Engine,
+    alice: CartFixture,
+    provider: RecordingProvider,
+    total_service: FakeTotalService,
+    currency: str,
+) -> None:
+    # 70 JPY would otherwise be sent as 7000 minor units: 100 times too much (NFR-1).
+    total_service.total = CartTotal(Decimal("70.00"), currency)
+
+    response = pay(client, alice)
+
+    assert_rejected(response, 422, "unsupported_currency", engine, provider)
+
+
+def test_unexpected_error_is_a_generic_500(
+    engine: Engine, alice: CartFixture, provider: RecordingProvider
+) -> None:
+    class BrokenTotalService:
+        def get_total(self, cart_id: UUID) -> CartTotal:
+            raise RuntimeError("secret internal detail")
+
+    app = create_app(make_test_config(), provider=provider, total_service=BrokenTotalService())
+    try:
+        response = pay(app.test_client(), alice)
+    finally:
+        app.extensions["engine"].dispose()
+
+    assert response.status_code == 500
+    assert "secret" not in response.get_data(as_text=True)
+    assert provider.calls == []
+    assert payment_count(engine) == 0

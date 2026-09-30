@@ -79,5 +79,9 @@ class InvalidAmountError(DomainError):
     code, status, message = "invalid_amount", 422, "Cart total must be positive, in cents."
 
 
+class UnsupportedCurrencyError(DomainError):
+    code, status, message = "unsupported_currency", 422, "Cart currency is not supported."
+
+
 def handle_domain_error(error: DomainError) -> tuple[dict[str, Any], int, dict[str, str]]:
     return error.body(), error.status, error.headers()

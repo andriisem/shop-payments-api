@@ -35,7 +35,7 @@ A payment endpoint must hold three guarantees. This whole spec is built around t
 |---|---|---|
 | A-1 | The caller's identity comes from a JWT access token issued by the shop's identity provider, sent as `Authorization: Bearer <token>`. The service verifies the token itself (NFR-9) instead of trusting the network. | The task has no auth system. A plain identity header set by a gateway is spoofable by anything that can reach the service; a payment endpoint must be able to verify who is paying (zero trust). |
 | A-2 | The endpoint calls the provider **synchronously**. If the outcome is unknown (timeout), the response is `202` and the client polls by repeating the request with the same idempotency key. | The mock needs no webhooks, and the same design still works with a real provider. |
-| A-3 | The amount comes from the shop's **existing** total service; the payment part never calculates it. It is called through a one-method interface, `TotalService.get_total(cart_id) -> CartTotal(amount, currency)`, inside TX1 while the cart row is locked, so the amount belongs to the cart as it was locked. That is a short internal call; the long external provider call is the one that must never run under a lock (NFR-3). Locally and in tests a fixed stand-in replaces the service, like the mock provider. | The task says this service exists and that we do not calculate how much to pay. |
+| A-3 | The amount comes from the shop's **existing** total service; the payment part never calculates it. It is called through a one-method interface, `TotalService.get_total(cart_id) -> CartTotal(amount, currency)`, inside TX1 while the cart row is locked, so the amount belongs to the cart as it was locked. That is a short internal call; the long external provider call is the one that must never run under a lock (NFR-3). A real client MUST call it with an explicit, short timeout, and the total service MUST NOT lock the cart itself (it would block on our lock). Its answer is external input and is validated (EC-9, EC-11). Locally and in tests a fixed stand-in replaces the service, like the mock provider. | The task says this service exists and that we do not calculate how much to pay. |
 | A-5 | When the request has no `payment_method_id`, the user's default method is used. If there are several defaults, the most recently created one wins. | The base schema does not enforce a single default. |
 | A-6 | Stock is not checked or decremented. | That is order fulfilment (see Out of Scope). |
 | A-7 | The mock provider's result depends on the token (see Mock payment provider). | Tests need deterministic results. |
@@ -93,7 +93,7 @@ flowchart TD
     C2 -- yes --> R
     C2 -- no --> D{owned, active, has items,<br/>no live payment?}
     D -- no --> E[404 / 409 / 422]
-    D -- yes --> F[Resolve payment method<br/>calculate total]
+    D -- yes --> F[Resolve payment method<br/>get total from total service]
     F --> G[INSERT payment pending<br/>COMMIT TX1]
     G -- unique violation --> G2[Re-read: replay or 409]
     G --> I[provider.charge<br/>idempotency_key = payment.id<br/>no TX open]
@@ -182,7 +182,8 @@ A replayed response has the header `Idempotent-Replayed: true`.
 | 402 | `Payment` failed, `card_declined` | Provider declined |
 | 404 | `cart_not_found`, `payment_method_not_found` | Missing, or owned by another user |
 | 409 | `cart_not_active`, `payment_in_progress` | Cart checked out or abandoned; a live payment exists under another key |
-| 422 | `cart_empty`, `no_payment_method`, `invalid_amount`, `idempotency_key_reused` | Business rule violated |
+| 422 | `cart_empty`, `no_payment_method`, `invalid_amount`, `unsupported_currency`, `idempotency_key_reused` | Business rule violated |
+| 500 | Generic error page | Unexpected error. Never includes internal details; nothing is charged if it happens before the provider call |
 | 502 | `Payment` failed, `provider_error` | Provider definitely rejected the request (no charge) |
 
 A replay returns the status code that matches the payment's **current** state. For example, a `202` becomes `201` once the payment is reconciled.
@@ -299,7 +300,7 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 
 | ID | Given / When / Then | Refs |
 |---|---|---|
-| AC-1 | **Given** Alice's active cart (1×45.00 + 2×12.50) and her default card **When** she POSTs with a new key **Then** 201, `succeeded`, `amount="70.00"`, `currency="USD"`, and the cart is `checked_out` | FR-1,8,11 |
+| AC-1 | **Given** Alice's active cart, for which the total service returns 70.00 USD, and her default card **When** she POSTs with a new key **Then** 201, `succeeded`, `amount="70.00"`, `currency="USD"`, and the cart is `checked_out` | FR-1,8,11 |
 | AC-2 | **Given** AC-1 **When** the same key and body are sent again **Then** 201 with the same payment id, `Idempotent-Replayed: true`, and exactly one provider call | FR-3 |
 | AC-3 | **Given** AC-1's key **When** it is reused with a different `payment_method_id` **Then** 422 `idempotency_key_reused` | FR-4 |
 | AC-4 | **Given** no `Idempotency-Key` header **Then** 400 `missing_idempotency_key` | FR-2 |
@@ -332,8 +333,9 @@ The service maps results strictly (NFR-4, FR-13): only `succeeded` **with** a `p
 | EC-5 | The cart becomes `abandoned` / `checked_out` between TX1 and TX2 | This is prevented by FR-15. TX2 still locks the cart and only moves `active → checked_out`. If the cart is not `active`, it logs an error for manual review and does not overwrite it |
 | EC-6 | Several `is_default = true` methods | The most recently created one wins (A-5) |
 | EC-7 | Invalid UUID in path or body | 400 `invalid_request`. Only the canonical `8-4-4-4-12` hex form is valid (no `urn:uuid:`, braces or missing dashes); a token whose `sub` is not a canonical UUID is 401 |
-| EC-9 | The total service returns 0, a negative amount, or a fraction of a cent | 422 `invalid_amount` (the DB CHECK on `amount > 0` is the backstop) |
+| EC-9 | The total service returns 0, a negative amount, a fraction of a cent, a non-finite value, or an amount that does not fit `NUMERIC(12,2)` | 422 `invalid_amount` (the DB CHECK on `amount > 0` is the backstop) |
 | EC-10 | TX2 fails (DB error, lost connection) after the provider returned a result | TX2 rolls back, so the payment stays `pending`. The response reflects the DB state: 202, never 500 and never `failed`. Log an error with `payment_id` and the provider result for reconciliation. A same-key retry replays 202 until reconciled (OS-5) |
+| EC-11 | The total service returns a currency that is not 3 upper-case letters, or one without exactly 2 decimals (e.g. JPY, KWD) | 422 `unsupported_currency`. Minor units assume 2 decimals (NFR-1): 70 JPY would otherwise be charged as 7000 |
 
 ---
 
@@ -388,7 +390,7 @@ tests/
   conftest.py            # Postgres test DB, per-test cleanup, fixtures, fake provider
   test_auth.py           # AC-21: token checks
   test_create_payment.py # payment outcomes: AC-1, AC-10…AC-13, AC-15, EC-5
-  test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7, EC-9
+  test_payment_errors.py # rejected requests: AC-4…AC-9, AC-14, EC-7, EC-9, EC-11
   test_idempotency.py    # replay and key reuse: AC-2, AC-3, AC-19, FR-3, FR-4
   test_concurrency.py    # EC-1, EC-2, AC-20 (threads + real Postgres)
 scripts/

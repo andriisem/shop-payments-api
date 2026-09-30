@@ -6,6 +6,7 @@ can lazy-load (and silently open a transaction) after its session is closed.
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -33,11 +34,44 @@ from app.payments.errors import (
     NoPaymentMethodError,
     PaymentInProgressError,
     PaymentMethodNotFoundError,
+    UnsupportedCurrencyError,
 )
 
 logger = logging.getLogger(__name__)
 
 CENT = Decimal("0.01")
+MAX_AMOUNT = Decimal("1E10")  # NUMERIC(12,2) holds at most 9,999,999,999.99
+CURRENCY_CODE = re.compile(r"[A-Z]{3}")
+# NFR-1: minor units assume 2 decimals. These ISO 4217 currencies have 0 or 3, so 70 JPY
+# would be charged as 7000 (100x) and 70 KWD as 7000 (10x too little).
+NOT_TWO_DECIMAL_CURRENCIES = frozenset(
+    [
+        "BIF",
+        "CLP",
+        "DJF",
+        "GNF",
+        "ISK",
+        "JPY",
+        "KMF",
+        "KRW",
+        "PYG",
+        "RWF",
+        "UGX",
+        "UYI",
+        "VND",
+        "VUV",
+        "XAF",
+        "XOF",
+        "XPF",
+        "BHD",
+        "IQD",
+        "JOD",
+        "KWD",
+        "LYD",
+        "OMR",
+        "TND",
+    ]
+)
 LIVE_STATUSES = ("pending", "succeeded")
 
 
@@ -316,11 +350,18 @@ class PaymentService:
     def _get_total(self, cart: Cart) -> CartTotal:
         """FR-8: ask the existing total service (A-3), under the cart lock. Never calculate.
 
-        Whatever it answers, we only charge a positive amount in whole cents (EC-9).
+        Its answer is external input: only a finite, positive amount in whole cents that
+        fits NUMERIC(12,2) (EC-9), in a supported 2-decimal currency (EC-11), is charged.
         """
         total = self._total_service.get_total(cart.id)
-        if total.amount <= 0 or total.amount != total.amount.quantize(CENT):
+        amount = total.amount
+        if not (amount.is_finite() and 0 < amount < MAX_AMOUNT and amount == amount.quantize(CENT)):
             raise InvalidAmountError()
+        if (
+            not CURRENCY_CODE.fullmatch(total.currency)
+            or total.currency in NOT_TWO_DECIMAL_CURRENCIES
+        ):
+            raise UnsupportedCurrencyError()
         return total
 
     def _charge(
